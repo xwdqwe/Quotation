@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}用户卡出货匹配{% endblock %}
+
+{% block content %}
+<div class="page-title">
+  <h1>用户卡出货匹配</h1>
+  <a class="button ghost" href="{{ request.app.url_path_for('library_page') }}">查看报价库</a>
+</div>
+
+<section class="panel">
+  <h2>用户卡属性</h2>
+  <form method="post" action="{{ request.app.url_path_for('run_match') }}" class="stack">
+    <div class="form-grid three">
+      <label>
+        订单号/交易号
+        <input name="order_no" value="{{ query.order_no or '' }}" placeholder="可选">
+      </label>
+      <label>
+        品牌
+        <select name="brand" required>
+          <option value="">待选择</option>
+          {% for brand in brand_options %}
+          <option value="{{ brand.name }}" {% if query.brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        地区/币种
+        {% set query_market = query.market if query.market is defined else market_value(query.country, query.currency) %}
+        <select name="market" required>
+          <option value="">待选择</option>
+          {% for market in market_options %}
+          <option value="{{ market.value }}" {% if query_market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        面额
+        <input name="denomination" type="number" step="any" min="0" value="{{ query.denomination|fmt if query.denomination is defined and query.denomination is not none else '' }}" placeholder="100" required>
+      </label>
+      <label>
+        统一卡细分
+        <select name="normalized_subtype">
+          <option value="" {% if not query.normalized_card_subtype %}selected{% endif %}>不限</option>
+          {% for option in ["卡图", "代码", "电子卡", "竖卡"] %}
+          <option value="{{ option }}" {% if query.normalized_card_subtype == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="button primary" type="submit">查询报价</button>
+    </div>
+  </form>
+</section>
+
+{% if matches %}
+  {% if matches.errors %}
+  <div class="notice error">{{ matches.errors|join('；') }}</div>
+  {% else %}
+  <section class="panel">
+    <h2>符合条件报价排名</h2>
+    {% set result_rows = matches.matches %}
+    {% include "_quote_result_table.html" with context %}
+  </section>
+  {% endif %}
+{% endif %}
+{% endblock %}

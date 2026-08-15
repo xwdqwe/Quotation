@@ -1,0 +1,22 @@
+[Unit]
+Description=Cardsabi Quote Engine
+After=network.target
+
+[Service]
+Type=simple
+User=cardsabi
+Group=cardsabi
+WorkingDirectory=/opt/cardsabi-quote-engine
+EnvironmentFile=/etc/cardsabi-quote-engine.env
+ExecStart=/opt/cardsabi-quote-engine/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/cardsabi-quote-engine
+
+[Install]
+WantedBy=multi-user.target

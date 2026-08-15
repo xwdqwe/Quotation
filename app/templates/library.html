@@ -1,0 +1,490 @@
+{% extends "base.html" %}
+{% block title %}供应商报价库{% endblock %}
+
+{% block content %}
+<div class="page-title">
+  <h1>供应商报价库</h1>
+  <a class="button ghost" href="{{ request.app.url_path_for('quote_page') }}">录入新报价</a>
+</div>
+
+{% if reset %}
+  <div class="notice success">测试数据已清空，APP 建议报价已变为空。</div>
+{% endif %}
+{% if group_message %}<div class="notice success">{{ group_message }}</div>{% endif %}
+{% if group_error %}<div class="notice error">{{ group_error }}</div>{% endif %}
+
+{% if group_impact_result %}
+<section class="panel">
+  <h2>{% if group_impact_result.action == "pause_group" %}暂停影响清单{% else %}恢复影响清单{% endif %}</h2>
+  {% if group_impact_result.action == "mark_group_needs_refresh" %}
+  <div class="notice info">该群已解除暂停，但旧报价暂不参与匹配。请录入该群最新报价并确认后启用。</div>
+  {% elif group_impact_result.action in ["confirm_reuse_old_quotes", "restore_group_normal_after_new_quotes", "restore_group_normal"] %}
+  <div class="notice info">该群相关报价已重新纳入出货匹配和 APP 建议报价计算。</div>
+  {% endif %}
+  {% set no_available = group_impact_result.impact_list | selectattr("action", "equalto", "no_available_quote") | list %}
+  {% set manual_review = group_impact_result.impact_list | selectattr("action", "equalto", "manual_review") | list %}
+  {% if no_available %}
+  <div class="notice error">存在暂无可用报价的维度，建议暂停 APP 后台对应报价维度或人工确认后再收卡。</div>
+  {% endif %}
+  {% if manual_review %}
+  <div class="notice warning">存在部分覆盖候选的维度，请人工判断，不要直接填 0 或暂停 APP 后台报价。</div>
+  {% endif %}
+  {% if group_impact_result.impact_list %}
+  <div class="table-wrap">
+    <table class="data-table compact-table">
+      <thead>
+        <tr>
+          <th>品牌</th>
+          <th>地区/币种</th>
+          <th>统一细分</th>
+          <th>面额范围</th>
+        <th>管理后台价</th>
+          <th>暂停前最高报价</th>
+          <th>暂停前最高群</th>
+          <th>暂停后最高报价</th>
+          <th>暂停后最高群</th>
+          <th>部分覆盖候选</th>
+          <th>建议动作</th>
+          <th>原因</th>
+          <th>详情</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in group_impact_result.impact_list %}
+        <tr class="{% if item.action == 'no_available_quote' %}row-warning{% elif item.action == 'manual_review' %}row-muted{% endif %}">
+          <td>{{ item.brand }}</td>
+          <td>{{ market_label(item.country, item.currency) }}</td>
+          <td>{{ item.normalized_card_subtype }}</td>
+          <td>{% if item.denom_min is none and item.denom_max is none %}范围不限{% elif item.denom_max is none %}{{ item.denom_min|fmt }}以上{% else %}{{ item.denom_min|fmt }}-{{ item.denom_max|fmt }}{% endif %}{% if item.multiplier is not none %} / {{ item.multiplier|fmt }}倍{% endif %}</td>
+          <td>{{ item.current_backend_rate|fmt if item.current_backend_rate is not none else '-' }}</td>
+          <td>{{ item.before_top_rate|fmt if item.before_top_rate is not none else '-' }}</td>
+          <td>{{ item.before_top_group or '-' }}</td>
+          <td>{{ item.after_top_rate|fmt if item.after_top_rate is not none else '-' }}</td>
+          <td>{{ item.after_top_group or '-' }}</td>
+          <td class="wrap-text">{{ item.partial_candidates_text or '-' }}</td>
+          <td><span class="badge status-{{ item.action }}">{{ item.action_label }}</span></td>
+          <td class="wrap-text">{{ item.reason }}</td>
+          <td><button class="button ghost small impact-detail-button" type="button" data-detail="{{ item.reason_detail|e }}">详情</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">本次操作没有影响可计算的 active 报价维度。</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>供应群状态管理</h2>
+  <p class="muted">用于暂停或恢复整个供应群。若只暂停某群某品牌、某地区或某批报价，请使用下方报价筛选结果的批量操作。</p>
+  <div class="group-list">
+    {% for group in supplier_groups %}
+    <div class="group-row">
+      <div>
+        <strong>{{ group.name }}</strong>
+        <span class="badge status-{{ group.status }}">
+          {% if group.status == "normal" %}正常{% elif group.status == "paused" %}暂停中，不参与匹配{% elif group.status == "needs_refresh" %}待刷新，旧报价暂不参与匹配{% else %}停用{% endif %}
+        </span>
+        <small>{{ group.active_quote_count or 0 }} 条正常报价</small>
+        {% if group.status == "paused" %}
+        <div class="muted">该群所有报价暂不参与出货匹配和 APP 建议报价计算。</div>
+        {% endif %}
+        {% if group.status == "needs_refresh" %}
+        <div class="muted">该群已解除暂停，但旧报价暂不参与匹配。请录入该群最新报价并确认后启用。</div>
+        {% endif %}
+      </div>
+      <div class="group-actions">
+        {% if group.status == "normal" %}
+        <form method="post" action="{{ request.app.url_path_for('change_supplier_group_status', group_id=group.id) }}" onsubmit="return confirm('确认暂停【{{ group.name }}】全部报价？\n这是供应群级暂停，会影响该群所有品牌和地区。');">
+          <input type="hidden" name="action" value="pause_group">
+          <input name="operator" placeholder="操作人">
+          <select name="reason" required>
+            <option value="">选择暂停原因</option>
+            <option>群通知暂停</option>
+            <option>供应商暂不收</option>
+            <option>风险过高</option>
+            <option>价格异常</option>
+            <option>临时下架</option>
+            <option>其他</option>
+          </select>
+          <button class="button danger small" type="submit">暂停该群</button>
+        </form>
+        {% elif group.status == "paused" %}
+        <form method="post" action="{{ request.app.url_path_for('change_supplier_group_status', group_id=group.id) }}" onsubmit="return confirm('确认将【{{ group.name }}】解除暂停并等待新报价？\n旧报价仍不参与匹配。');">
+          <input type="hidden" name="action" value="mark_group_needs_refresh">
+          <input name="operator" placeholder="操作人">
+          <input type="hidden" name="reason" value="群通知恢复，等待刷新报价">
+          <button class="button small" type="submit">解除暂停，等待新报价</button>
+        </form>
+        <form method="post" action="{{ request.app.url_path_for('change_supplier_group_status', group_id=group.id) }}" onsubmit="return confirm('确认沿用【{{ group.name }}】旧报价并恢复正常？\n恢复后旧报价会重新参与匹配和 APP 建议报价计算。');">
+          <input type="hidden" name="action" value="confirm_reuse_old_quotes">
+          <input name="operator" placeholder="操作人">
+          <input name="reason" value="人工确认沿用旧报价" placeholder="确认原因">
+          <button class="button primary small" type="submit">确认沿用旧报价并恢复正常</button>
+        </form>
+        {% elif group.status == "needs_refresh" %}
+        <a class="button small" href="{{ request.app.url_path_for('quote_page') }}?supplier_group={{ group.name }}">录入该群新报价</a>
+        <form method="post" action="{{ request.app.url_path_for('change_supplier_group_status', group_id=group.id) }}" onsubmit="return confirm('确认沿用【{{ group.name }}】旧报价并恢复正常？\n恢复后旧报价会重新参与匹配和 APP 建议报价计算。');">
+          <input type="hidden" name="action" value="confirm_reuse_old_quotes">
+          <input name="operator" placeholder="操作人">
+          <input name="reason" value="人工确认沿用旧报价" placeholder="确认原因">
+          <button class="button primary small" type="submit">确认沿用旧报价并恢复正常</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="empty">暂无供应群。</div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel danger-zone">
+  <div class="section-head">
+    <div>
+      <h2>本地测试数据</h2>
+      <p class="muted">仅用于本地 MVP 测试，会清空报价库、APP 建议价和出货匹配日志。</p>
+    </div>
+    <form
+      method="post"
+      action="{{ request.app.url_path_for('reset_test_data') }}"
+      onsubmit="return confirm('确认清空 supplier_quotes、app_price_records、app_price_suggestions、shipment_match_logs？此操作仅用于本地 MVP 测试。');"
+    >
+      <button class="button danger" type="submit">清空测试数据</button>
+    </form>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>筛选</h2>
+  <form id="library-filter-form" method="get" action="{{ request.app.url_path_for('library_page') }}" class="filter-grid">
+    <label>
+      品牌
+      <select name="brand">
+        <option value="">全部</option>
+        {% for brand in brand_options %}
+        <option value="{{ brand.name }}" {% if filters.brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      地区/币种
+      <select name="market">
+        <option value="">全部</option>
+        {% for market in market_options %}
+        <option value="{{ market.value }}" {% if filters.market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      类型
+      <select name="frontend_type">
+        <option value="">全部</option>
+        <option value="physical" {% if filters.frontend_type == "physical" %}selected{% endif %}>physical</option>
+        <option value="code" {% if filters.frontend_type == "code" %}selected{% endif %}>code</option>
+      </select>
+    </label>
+    <label>
+      统一细分
+      <select name="normalized_card_subtype">
+        <option value="">全部</option>
+        {% for option in normalized_subtype_options_for_brand(filters.brand) %}
+        <option value="{{ option }}" {% if filters.normalized_card_subtype == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      处理方式
+      <select name="processing_method">
+        <option value="">全部</option>
+        <option value="fast_card" {% if filters.processing_method == "fast_card" %}selected{% endif %}>快卡</option>
+        <option value="fast_process" {% if filters.processing_method == "fast_process" %}selected{% endif %}>快刷</option>
+        <option value="slow_process" {% if filters.processing_method == "slow_process" %}selected{% endif %}>慢刷</option>
+      </select>
+    </label>
+    <label>来源群<input name="supplier_group" value="{{ filters.supplier_group }}" placeholder="支持模糊输入，如 1007 / A群"></label>
+    <label>
+      状态
+      <select name="status">
+        <option value="">全部</option>
+        <option value="active" {% if filters.status == "active" %}selected{% endif %}>正常</option>
+        <option value="ask_first" {% if filters.status == "ask_first" %}selected{% endif %}>发前问</option>
+        <option value="paused" {% if filters.status == "paused" %}selected{% endif %}>暂停</option>
+        <option value="unavailable" {% if filters.status == "unavailable" %}selected{% endif %}>不可用</option>
+        <option value="warning" {% if filters.status == "warning" %}selected{% endif %}>风险</option>
+        <option value="pending" {% if filters.status == "pending" %}selected{% endif %}>待确认</option>
+        <option value="revoked" {% if filters.status == "revoked" %}selected{% endif %}>已撤回</option>
+        <option value="superseded" {% if filters.status == "superseded" %}selected{% endif %}>已覆盖</option>
+      </select>
+    </label>
+    <label>
+      包含历史报价
+      <select name="include_history">
+        <option value="" {% if not filters.include_history %}selected{% endif %}>否</option>
+        <option value="yes" {% if filters.include_history == "yes" %}selected{% endif %}>是</option>
+      </select>
+    </label>
+    <label>面额下限<input name="denom_min" value="{{ filters.denom_min }}" placeholder="如 50"></label>
+    <label>面额上限<input name="denom_max" value="{{ filters.denom_max }}" placeholder="如 500"></label>
+    <label>倍数<input name="multiplier" value="{{ filters.multiplier }}" placeholder="如 5 / 50"></label>
+    <label>
+      是否过期
+      <select name="expired">
+        <option value="">全部</option>
+        <option value="no" {% if filters.expired == "no" %}selected{% endif %}>未过期</option>
+        <option value="yes" {% if filters.expired == "yes" %}selected{% endif %}>已过期</option>
+      </select>
+    </label>
+    <label>批次号<input name="quote_batch_id" value="{{ filters.quote_batch_id }}" placeholder="QB2026..."></label>
+    <div class="filter-actions">
+      <button class="button primary" type="submit">筛选</button>
+      <a class="button ghost" href="{{ request.app.url_path_for('library_page') }}">清空</a>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <h2>报价批量管理</h2>
+      <p class="muted">筛选后可批量暂停或恢复报价。只填来源群可暂停该群全部报价；填来源群 + 品牌可暂停该群某品牌；只填品牌可暂停所有群该品牌；继续填地区可缩小到指定地区。</p>
+    </div>
+    <span id="filtered-count" class="badge" data-count="{{ filtered_quote_count }}">筛选命中 {{ filtered_quote_count }} 条</span>
+  </div>
+  <div class="bulk-toolbar">
+    <button class="button small" type="button" id="select-page">全选当前页</button>
+    <button class="button small" type="button" id="select-filtered">全选全部筛选结果</button>
+    <button class="button small ghost" type="button" id="clear-selection">取消全选</button>
+    <input id="bulk-operator" placeholder="操作人" value="local_admin">
+    <select id="bulk-reason">
+      <option value="群通知暂停">群通知暂停</option>
+      <option value="供应商暂不收">供应商暂不收</option>
+      <option value="风险过高">风险过高</option>
+      <option value="价格异常">价格异常</option>
+      <option value="临时下架">临时下架</option>
+      <option value="其他">其他</option>
+    </select>
+    <input id="bulk-reason-other" placeholder="其他原因，可选">
+    <button class="button danger small" type="button" id="bulk-pause">批量暂停</button>
+    <button class="button primary small" type="button" id="bulk-resume">批量恢复正常</button>
+  </div>
+  <p class="muted" id="selection-summary">当前未选择报价。</p>
+</section>
+
+<section class="panel">
+  <h2>报价列表</h2>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="toggle-page"></th>
+          <th>ID</th>
+          <th>来源群</th>
+          <th>群状态</th>
+          <th>批次号</th>
+          <th>品牌</th>
+          <th>地区/币种</th>
+          <th>类型</th>
+          <th>统一细分</th>
+          <th>原始细分</th>
+          <th>处理方式</th>
+          <th>反馈时间</th>
+          <th>倍数</th>
+          <th>范围</th>
+          <th>报价</th>
+          <th>状态</th>
+          <th>限制条件</th>
+          <th>过期时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for quote in quotes %}
+        <tr class="{% if quote.status == 'paused' %}row-muted{% endif %}">
+          <td><input class="quote-checkbox" type="checkbox" value="{{ quote.id }}"></td>
+          <td>{{ quote.id }}</td>
+          <td>{{ quote.supplier_group }}</td>
+          <td>{{ quote.supplier_group_status }}</td>
+          <td>{{ quote.quote_batch_id or '-' }}</td>
+          <td>{{ quote.brand }}</td>
+          <td>{{ market_label(quote.country, quote.currency) }}</td>
+          <td>{{ quote.frontend_type }}</td>
+          <td>{{ quote.normalized_card_subtype or '待确认' }}</td>
+          <td>{{ quote.raw_card_subtype or quote.subtype }}</td>
+          <td>{{ method_label(quote.processing_method) }}</td>
+          <td class="wrap-text">{{ quote.feedback_note or '-' }}</td>
+          <td>{{ quote.multiplier|fmt if quote.multiplier is not none else '-' }}</td>
+          <td>{% if quote.denom_min is none and quote.denom_max is none %}范围不限{% elif quote.denom_min is not none and quote.denom_max is none %}{{ quote.denom_min|fmt }}以上{% else %}{{ quote.denom_min|fmt }} - {{ quote.denom_max|fmt }}{% endif %}</td>
+          <td>{{ (quote.supplier_rate_text or quote.supplier_rate)|fmt }}</td>
+          <td><span class="badge status-{{ quote.status }}">{{ status_label(quote.status) }}</span></td>
+          <td class="wrap-text">{{ quote.requirements or '-' }}</td>
+          <td>{{ quote.expires_at }}</td>
+          <td>
+            {% if quote.status == "paused" %}
+            <button class="button small primary single-action" data-action="resume" data-id="{{ quote.id }}" type="button">恢复</button>
+            {% else %}
+            <button class="button small danger single-action" data-action="pause" data-id="{{ quote.id }}" type="button">暂停</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="19" class="empty">暂无报价。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>报价批量操作日志</h2>
+  <div class="table-wrap">
+    <table class="data-table compact-table">
+      <thead><tr><th>时间</th><th>动作</th><th>模式</th><th>影响报价</th><th>跳过</th><th>操作人</th><th>原因</th><th>筛选条件</th></tr></thead>
+      <tbody>
+        {% for log in bulk_action_logs %}
+        <tr>
+          <td>{{ log.created_at }}</td>
+          <td>{{ log.action }}</td>
+          <td>{{ log.mode }}</td>
+          <td>{{ log.affected_quote_count }}</td>
+          <td>{{ log.skipped_count }}</td>
+          <td>{{ log.operator or '-' }}</td>
+          <td>{{ log.reason or '-' }}</td>
+          <td class="wrap-text">{{ log.filters_json or '-' }}</td>
+        </tr>
+        {% else %}<tr><td colspan="8" class="empty">暂无报价批量操作日志。</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>供应群状态日志</h2>
+  <div class="table-wrap">
+    <table class="data-table compact-table">
+      <thead><tr><th>时间</th><th>动作</th><th>供应群</th><th>旧状态</th><th>新状态</th><th>批次号</th><th>操作人</th><th>原因</th><th>影响报价</th></tr></thead>
+      <tbody>
+        {% for log in operation_logs %}
+        <tr>
+          <td>{{ log.created_at }}</td><td>{{ log.action }}</td><td>{{ log.group_name or '-' }}</td>
+          <td>{{ log.old_status or '-' }}</td><td>{{ log.new_status or '-' }}</td><td>{{ log.quote_batch_id or '-' }}</td>
+          <td>{{ log.operator or '-' }}</td><td>{{ log.reason or '-' }}</td><td>{{ log.affected_quote_count }}</td>
+        </tr>
+        {% else %}<tr><td colspan="9" class="empty">暂无操作日志。</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(() => {
+  const filters = {{ filters|tojson }};
+  const filteredCount = Number(document.getElementById("filtered-count")?.dataset.count || 0);
+  const checkboxes = Array.from(document.querySelectorAll(".quote-checkbox"));
+  const summary = document.getElementById("selection-summary");
+  const bulkReason = document.getElementById("bulk-reason");
+  const reasonOther = document.getElementById("bulk-reason-other");
+  const operatorInput = document.getElementById("bulk-operator");
+  let selectionMode = "selected";
+
+  const activeFilters = () => Object.fromEntries(Object.entries(filters).filter(([, value]) => String(value || "").trim() !== ""));
+  const selectedIds = () => checkboxes.filter((box) => box.checked).map((box) => Number(box.value));
+  const updateSummary = () => {
+    const count = selectionMode === "filtered" ? filteredCount : selectedIds().length;
+    summary.textContent = selectionMode === "filtered"
+      ? `已选择全部筛选结果：${count} 条。`
+      : `已选择当前页：${count} 条。`;
+  };
+
+  document.getElementById("toggle-page")?.addEventListener("change", (event) => {
+    selectionMode = "selected";
+    checkboxes.forEach((box) => { box.checked = event.target.checked; });
+    updateSummary();
+  });
+  document.getElementById("select-page")?.addEventListener("click", () => {
+    selectionMode = "selected";
+    checkboxes.forEach((box) => { box.checked = true; });
+    updateSummary();
+  });
+  document.getElementById("select-filtered")?.addEventListener("click", () => {
+    selectionMode = "filtered";
+    checkboxes.forEach((box) => { box.checked = true; });
+    updateSummary();
+  });
+  document.getElementById("clear-selection")?.addEventListener("click", () => {
+    selectionMode = "selected";
+    checkboxes.forEach((box) => { box.checked = false; });
+    updateSummary();
+  });
+  checkboxes.forEach((box) => box.addEventListener("change", () => {
+    selectionMode = "selected";
+    updateSummary();
+  }));
+
+  const actionUrl = (action) => action === "pause"
+    ? "{{ request.app.url_path_for('bulk_pause_library_quotes') }}"
+    : "{{ request.app.url_path_for('bulk_resume_library_quotes') }}";
+
+  const runBulk = async (action, ids = null) => {
+    const mode = ids ? "selected" : selectionMode;
+    const quoteIds = ids || selectedIds();
+    const filtersPayload = activeFilters();
+    const count = mode === "filtered" ? filteredCount : quoteIds.length;
+    if (count <= 0) {
+      alert("请先选择报价，或选择全部筛选结果。");
+      return;
+    }
+    let forceConfirm = false;
+    let message = action === "pause"
+      ? `你即将暂停 ${count} 条报价。\n暂停后这些报价不会参与 APP 建议报价和用户出货匹配。\n请确认操作无误。`
+      : `你即将恢复 ${count} 条报价为正常。\n恢复后这些报价会重新参与 APP 建议报价和用户出货匹配。\n请确认操作无误。`;
+    if (mode === "filtered") {
+      message += "\n\n当前操作对象：全部筛选结果。";
+      if (Object.keys(filtersPayload).length === 0) {
+        message += "\n\n当前没有任何筛选条件，将影响全部报价，风险很高。";
+        forceConfirm = true;
+      }
+    }
+    if (count > 100) {
+      message += `\n\n警告：本次影响 ${count} 条报价，数量较多，请再次核对筛选条件。`;
+    }
+    if (!confirm(message)) return;
+
+    const reason = bulkReason.value === "其他" ? reasonOther.value : bulkReason.value;
+    const response = await fetch(actionUrl(action), {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        mode,
+        quote_ids: mode === "selected" ? quoteIds : [],
+        filters: mode === "filtered" ? filtersPayload : {},
+        reason,
+        operator: operatorInput.value || "local_admin",
+        force_confirm: forceConfirm,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      alert(payload.detail?.message || payload.detail || "批量操作失败");
+      return;
+    }
+    alert(`${payload.message}\n受影响维度：${payload.affected_keys_count}`);
+    window.location.reload();
+  };
+
+  document.getElementById("bulk-pause")?.addEventListener("click", () => runBulk("pause"));
+  document.getElementById("bulk-resume")?.addEventListener("click", () => runBulk("resume"));
+  document.querySelectorAll(".single-action").forEach((button) => {
+    button.addEventListener("click", () => runBulk(button.dataset.action, [Number(button.dataset.id)]));
+  });
+  document.querySelectorAll(".impact-detail-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      alert(button.dataset.detail || "暂无详情");
+    });
+  });
+  updateSummary();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,687 @@
+{% extends "base.html" %}
+{% block title %}报价解析 / APP建议报价{% endblock %}
+
+{% block content %}
+<div class="page-title">
+  <h1>群报价解析 / APP建议报价</h1>
+  <a class="button ghost" href="{{ request.app.url_path_for('library_page') }}">查看报价库</a>
+</div>
+
+{% if saved %}
+  <div class="notice success">
+    本次新增/更新 {{ saved_count }} 条报价。
+    {% if saved_batch %}<br>批次号：<strong>{{ saved_batch.quote_batch_id }}</strong>{% endif %}
+    {% if manual_count %}<br>仍需人工确认：{{ manual_count }} 条{% endif %}
+  </div>
+  {% if saved_batch and saved_batch.status != "revoked" %}
+  <form method="post" action="{{ request.app.url_path_for('revoke_batch', quote_batch_id=saved_batch.quote_batch_id) }}" class="inline-form" onsubmit="return confirm('确认撤回本批报价？\n撤回后，本批报价将不再参与出货匹配，但历史记录会保留。');">
+    <input name="operator" value="{{ operator or '' }}" placeholder="操作人">
+    <input name="reason" value="录入批次撤回" placeholder="撤回原因">
+    <button class="button danger" type="submit">撤回本批报价</button>
+  </form>
+  {% endif %}
+{% endif %}
+{% if revoked %}
+  <div class="notice warning">本批报价已撤回，不再参与出货匹配。{% if referenced_count %}已有 {{ referenced_count }} 次订单引用，引用历史已保留。{% endif %}</div>
+{% endif %}
+<section class="panel">
+  <h2>粘贴微信群报价</h2>
+  <form method="post" action="{{ request.app.url_path_for('parse_quotes') }}" class="stack">
+    <div class="form-grid">
+      <label>
+        来源群/供应商
+        <input name="supplier_group" value="{{ supplier_group }}" placeholder="解析可留空，保存前必填">
+      </label>
+      <label>
+        操作人
+        <input name="operator" value="{{ operator or '' }}" placeholder="客服姓名">
+      </label>
+      <label>
+        默认品牌
+        <select name="default_brand">
+          <option value="">不指定</option>
+          {% for brand in brand_options %}
+          <option value="{{ brand.name }}" {% if default_brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        默认地区/币种
+        <select name="default_market">
+          <option value="">不指定</option>
+          {% for market in market_options %}
+          <option value="{{ market.value }}" {% if default_market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        默认处理方式
+        <select name="default_processing_method">
+          <option value="">不指定</option>
+          <option value="fast_card" {% if default_processing_method == "fast_card" %}selected{% endif %}>快卡</option>
+          <option value="fast_process" {% if default_processing_method == "fast_process" %}selected{% endif %}>快刷</option>
+          <option value="slow_process" {% if default_processing_method == "slow_process" %}selected{% endif %}>慢刷</option>
+        </select>
+      </label>
+      <label>
+        默认内部细分
+        <select name="default_subtype">
+          <option value="">不指定</option>
+          {% for option in normalized_subtype_options() %}
+          <option value="{{ option }}" {% if default_subtype == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        默认倍数
+        <input name="default_multiplier" value="{{ default_multiplier }}" placeholder="可空，例如 50">
+      </label>
+      <label>
+        默认有效期（小时）
+        <input type="number" name="default_expire_hours" value="{{ default_expire_hours }}" min="0.5" step="0.5">
+      </label>
+    </div>
+    <label>
+      微信群报价文本
+      <textarea name="source_text" rows="8" placeholder="每行一条，例如：Apple US 横卡 50-500 5.20 快卡">{{ source_text }}</textarea>
+    </label>
+    <div class="actions">
+      <button class="button primary" type="submit">解析报价</button>
+    </div>
+  </form>
+</section>
+
+{% if pause_text_detected %}
+<div class="notice warning">
+  检测到文本中包含“暂停”。系统不会自动修改报价状态；如需暂停报价，请到
+  <a href="{{ request.app.url_path_for('library_page') }}">供应商报价库</a>
+  按来源群、品牌、地区等筛选后批量暂停。
+</div>
+{% endif %}
+
+{% if ignored_items %}
+<section class="panel">
+  <h2>已忽略内容</h2>
+  {% for item in ignored_items %}
+  <div class="notice warning">{{ item }}</div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if parsed_rows %}
+<section class="panel">
+  <h2>解析结果校正</h2>
+  <div class="notice info">本次解析出 {{ parsed_rows|length }} 条报价。</div>
+  {% if parsed_rows|length > 100 %}
+    <div class="notice warning">报价较多，建议保存前重点检查异常项和低置信度项。</div>
+  {% endif %}
+  <div id="quote-save-status" class="save-status" aria-live="polite"></div>
+  <form
+    id="quote-save-form"
+    data-quote-save-form
+    data-save-url="{{ request.app.url_path_for('save_quotes_json') }}"
+    data-save-preview-url="{{ request.app.url_path_for('save_quotes_preview') }}"
+    data-preview-url="{{ request.app.url_path_for('preview_quote_confirmation') }}"
+    data-redirect-base="{{ request.app.url_path_for('quote_page') }}"
+    data-supplier-group="{{ supplier_group }}"
+  >
+    <input type="hidden" name="row_count" value="{{ parsed_rows|length }}">
+    <div class="quote-edit-list">
+      {% for row in parsed_rows %}
+      <section class="quote-edit-item" data-quote-row>
+        <div class="quote-fields-grid">
+          <label class="field-xs">
+            行号
+            <input name="line_no_{{ loop.index0 }}" value="{{ row.line_no or '' }}">
+          </label>
+          <label>
+            品牌
+            <select name="brand_{{ loop.index0 }}">
+              <option value="">待选择</option>
+              {% for brand in brand_options %}
+              <option value="{{ brand.name }}" {% if row.brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field-wide">
+            地区/币种
+            {% set row_market = market_value(row.country, row.currency) %}
+            <select name="market_{{ loop.index0 }}">
+              <option value="">待选择</option>
+              {% for market in market_options %}
+              <option value="{{ market.value }}" {% if row_market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            前台类型
+            <select name="frontend_type_{{ loop.index0 }}">
+              <option value="physical" {% if row.frontend_type == "physical" %}selected{% endif %}>physical</option>
+              <option value="code" {% if row.frontend_type == "code" %}selected{% endif %}>code</option>
+            </select>
+          </label>
+          <label>
+            原始细分
+            <input name="raw_card_subtype_{{ loop.index0 }}" value="{{ row.raw_card_subtype or row.subtype }}" readonly>
+          </label>
+          <label>
+            统一细分
+            <select name="normalized_card_subtype_{{ loop.index0 }}">
+              {% for option in normalized_subtype_options_for_brand(row.brand) %}
+              <option value="{{ option }}" {% if row.normalized_card_subtype == option %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            处理方式
+            <select name="processing_method_{{ loop.index0 }}">
+              <option value="fast_card" {% if row.processing_method == "fast_card" %}selected{% endif %}>快卡</option>
+              <option value="fast_process" {% if row.processing_method == "fast_process" %}selected{% endif %}>快刷</option>
+              <option value="slow_process" {% if row.processing_method == "slow_process" %}selected{% endif %}>慢刷</option>
+            </select>
+          </label>
+          <label class="field-xs">
+            倍数
+            <input name="multiplier_{{ loop.index0 }}" value="{{ row.multiplier|fmt }}">
+          </label>
+          <label class="field-range">
+            面额范围
+            <span class="range-input">
+              <input name="denom_min_{{ loop.index0 }}" value="{{ row.denom_min|fmt if row.denom_min is not none else '' }}" placeholder="留空=不限">
+              <span>至</span>
+              <input name="denom_max_{{ loop.index0 }}" value="{{ row.denom_max|fmt if row.denom_max is not none else '' }}" placeholder="留空=不限">
+            </span>
+            {% if row.denom_min is none and row.denom_max is none %}
+            <small class="muted">范围不限</small>
+            {% elif row.denom_min is not none and row.denom_max is none %}
+            <small class="muted">{{ row.denom_min|fmt }}以上</small>
+            {% endif %}
+          </label>
+          <label class="field-sm">
+            供应商报价
+            <input name="supplier_rate_{{ loop.index0 }}" value="{{ row.supplier_rate|fmt if row.supplier_rate is not none else '' }}">
+          </label>
+          <label>
+            状态
+            <select name="status_{{ loop.index0 }}">
+              <option value="active" {% if row.status == "active" %}selected{% endif %}>正常</option>
+              <option value="ask_first" {% if row.status == "ask_first" %}selected{% endif %}>发前问</option>
+              <option value="paused" {% if row.status == "paused" %}selected{% endif %}>暂停</option>
+              <option value="unavailable" {% if row.status == "unavailable" %}selected{% endif %}>不收</option>
+              <option value="warning" {% if row.status == "warning" %}selected{% endif %}>风险提醒</option>
+              <option value="pending" {% if row.status == "pending" %}selected{% endif %}>待确认</option>
+            </select>
+          </label>
+          <label class="field-wide">
+            限制条件
+            <input name="requirements_{{ loop.index0 }}" value="{{ row.requirements }}">
+          </label>
+          <div class="quote-row-actions">
+            <label class="checkbox"><input type="checkbox" name="delete_{{ loop.index0 }}">删除</label>
+          </div>
+        </div>
+
+        {% set note = row.parse_note or "" %}
+        {% set show_parse_note = false %}
+        {% if note and (
+          (row.confidence is not none and row.confidence < 0.8)
+          or row.normalized_card_subtype == "待确认"
+          or row.status in ["warning", "ask_first", "unavailable", "paused"]
+          or "拆分" in note
+          or "未识别" in note
+          or "无法" in note
+          or "待确认" in note
+          or not row.brand
+          or not row.country
+          or not row.currency
+          or not row.frontend_type
+          or row.supplier_rate is none
+        ) %}
+          {% set show_parse_note = true %}
+        {% endif %}
+        <div class="quote-source-block">
+          <div class="source-line-text" title="{{ row.source_line or row.source_text }}">
+            <span>原始行：</span>{{ row.source_line or row.source_text }}
+          </div>
+          {% if row.feedback_note %}
+          <div class="parse-note-text" title="{{ row.feedback_note }}">
+            <span>反馈时间：</span>{{ row.feedback_note }}
+          </div>
+          {% endif %}
+          {% if show_parse_note %}
+          <div class="parse-note-text" title="{{ row.parse_note }}">
+            <span>解析备注：</span>{{ row.parse_note }}
+          </div>
+          {% endif %}
+        </div>
+
+        <input type="hidden" name="supplier_group_{{ loop.index0 }}" value="{{ row.supplier_group }}">
+        <input type="hidden" name="subtype_{{ loop.index0 }}" value="{{ row.raw_card_subtype or row.subtype }}">
+        <input type="hidden" name="confidence_{{ loop.index0 }}" value="{{ row.confidence }}">
+        <input type="hidden" name="feedback_note_{{ loop.index0 }}" value="{{ row.feedback_note }}">
+        <input type="hidden" name="range_type_{{ loop.index0 }}" value="{% if row.range_type %}{{ row.range_type }}{% elif row.denom_min is none and row.denom_max is none %}unlimited{% elif row.denom_min is not none and row.denom_max is none %}open{% elif row.denom_min == row.denom_max %}fixed{% else %}bounded{% endif %}">
+        <input type="hidden" name="source_line_{{ loop.index0 }}" value="{{ row.source_line or row.source_text }}">
+        <input type="hidden" name="parse_note_{{ loop.index0 }}" value="{{ row.parse_note }}">
+        <input type="hidden" name="source_text_{{ loop.index0 }}" value="{{ row.source_text }}">
+        <input type="hidden" name="received_at_{{ loop.index0 }}" value="{{ row.received_at }}">
+        <input type="hidden" name="expires_at_{{ loop.index0 }}" value="{{ row.expires_at }}">
+      </section>
+      {% endfor %}
+    </div>
+    <div class="actions">
+      <button class="button" type="button" data-safe-confirm-button>一键确认可确认项</button>
+      <button class="button primary" type="submit" data-save-button>确认保存报价</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="section-head">
+    <h2>APP 后台建议报价更新清单</h2>
+    <div class="tabs">
+      <a class="{% if tab == 'needs' %}active{% endif %}" href="{{ request.app.url_path_for('quote_page') }}?tab=needs{% if batch_id %}&batch_id={{ batch_id }}{% endif %}">需要处理</a>
+      <a class="{% if tab == 'no_change' %}active{% endif %}" href="{{ request.app.url_path_for('quote_page') }}?tab=no_change">无变化</a>
+      <a class="{% if tab == 'all' %}active{% endif %}" href="{{ request.app.url_path_for('quote_page') }}?tab=all">全部</a>
+    </div>
+    {% if tab != "no_change" %}
+    <form
+      method="post"
+      action="{{ request.app.url_path_for('confirm_visible_app_prices') }}"
+      onsubmit="return confirm('你将把当前列表中的 {{ app_bulk_confirm_count }} 条建议全部记录为“已同步到管理后台”。\n\n请确认：\n1. 你已经在 APP 管理后台完成对应价格修改；\n2. 报价引擎会把这些建议价记录为新的“管理后台价”；\n3. 处理后这些建议会从需要处理列表消失。');"
+    >
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <input type="hidden" name="batch_id" value="{{ batch_id or '' }}">
+      <button class="button small primary" type="submit" {% if app_bulk_confirm_count == 0 %}disabled title="当前列表暂无可批量确认项"{% endif %}>一键确认：已全部同步到管理后台</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if app_confirmed_count %}
+  <div class="notice success">已确认 {{ app_confirmed_count }} 条 APP 建议报价。</div>
+  {% endif %}
+  <div class="notice info">当前显示的是所有未处理的 APP 后台建议报价。处理后才会从这里消失。</div>
+  {% if pending_suggestion_count %}
+  <div class="notice warning">还有 {{ pending_suggestion_count }} 条 APP 后台建议报价未处理，请确认是否已同步到 APP 管理后台。</div>
+  {% endif %}
+  {% if saved and batch_id %}
+  <div class="notice success">本次保存后建议清单已重新计算，批次号：{{ batch_id }}。</div>
+  {% endif %}
+  <div class="table-wrap">
+    <table class="data-table compact-table">
+      <thead>
+        <tr>
+          <th>状态</th>
+          <th>品牌</th>
+          <th>地区/币种</th>
+          <th>统一细分</th>
+          <th>面额范围</th>
+          <th>倍数</th>
+          <th>管理后台价</th>
+          <th>当前最高报价</th>
+          <th>第二报价</th>
+          <th>第三报价</th>
+          <th>本次建议价</th>
+          <th>变化</th>
+          <th>最高来源</th>
+          <th>第二来源</th>
+          <th>第三来源</th>
+          <th>原因</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for record in app_prices %}
+        <tr>
+          <td><span class="badge status-{{ record.status }}">{{ status_label(record.status) }}</span></td>
+          <td>{{ record.brand }}</td>
+          <td>{{ market_label(record.country, record.currency) }}</td>
+          <td>{{ record.normalized_card_subtype or "-" }}</td>
+          <td>{% if record.denom_min is none and record.denom_max is none %}范围不限{% elif record.denom_min is not none and record.denom_max is none %}{{ record.denom_min|fmt }}以上{% else %}{{ record.denom_min|fmt }} - {{ record.denom_max|fmt }}{% endif %}</td>
+          <td>{{ record.multiplier|fmt if record.multiplier is not none else "-" }}</td>
+          <td>{% if record.recorded_backend_rate is none %}0{% else %}{{ record.recorded_backend_rate|fmt }}{% endif %}</td>
+          <td>{{ record.highest_supplier_rate|fmt if record.highest_supplier_rate is not none else "-" }}</td>
+          <td>{{ record.second_supplier_rate|fmt if record.second_supplier_rate is not none else "-" }}</td>
+          <td>{{ record.third_supplier_rate|fmt if record.third_supplier_rate is not none else "-" }}</td>
+          <td>{{ record.suggested_backend_rate|fmt }}</td>
+          <td>{{ record.change_amount|fmt if record.change_amount is not none else "-" }}</td>
+          <td>{{ record.highest_supplier_group or "-" }}</td>
+          <td>{{ record.second_supplier_group or "-" }}</td>
+          <td>{{ record.third_supplier_group or "-" }}</td>
+          <td class="reason-cell" title="{{ record.reason }}">{{ record.reason }}</td>
+          <td>
+            {% if record.status != "pending" %}
+            <span class="muted">无需操作</span>
+            {% elif record.suggested_backend_rate is not none %}
+            <form method="post" action="{{ request.app.url_path_for('confirm_price', record_id=record.id) }}">
+              <input type="hidden" name="action" value="{{ 'confirm_zero' if record.highest_quote_id is none else 'confirm_update' }}">
+              <button class="button small" type="submit">{{ "已在管理后台填0" if record.highest_quote_id is none else "已同步到管理后台" }}</button>
+            </form>
+            <form method="post" action="{{ request.app.url_path_for('defer_price', record_id=record.id) }}">
+              <input type="hidden" name="reason" value="本次暂不处理">
+              <button class="button small ghost" type="submit">暂不处理</button>
+            </form>
+            <button class="button small ghost" type="button" data-suggestion-detail="{{ record.reason_detail|e }}">详情</button>
+            {% else %}
+            <span class="muted">无需操作</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="17" class="empty">暂无建议价记录。保存供应商报价后，系统会按受影响维度生成建议。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% if parsed_rows %}
+<script>
+(() => {
+  const form = document.querySelector("[data-quote-save-form]");
+  if (!form) return;
+
+  const statusBox = document.getElementById("quote-save-status");
+  const saveButton = form.querySelector("[data-save-button]");
+  const safeConfirmButton = form.querySelector("[data-safe-confirm-button]");
+  const parseSupplierInput = document.querySelector('form[action="{{ request.app.url_path_for("parse_quotes") }}"] input[name="supplier_group"]');
+  const operatorInput = document.querySelector('form[action="{{ request.app.url_path_for("parse_quotes") }}"] input[name="operator"]');
+
+  const fieldValue = (row, fieldName) => {
+    const element = row.querySelector(`[name^="${fieldName}_"]`);
+    return element ? element.value.trim() : "";
+  };
+
+  const optionalNumber = (value) => {
+    const cleaned = String(value || "").trim();
+    if (!cleaned || cleaned === "-") return null;
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const optionalInteger = (value) => {
+    const parsed = optionalNumber(value);
+    return parsed === null ? null : Math.trunc(parsed);
+  };
+
+  const optionalDecimalString = (value) => {
+    const cleaned = String(value || "").trim();
+    if (!cleaned || cleaned === "-") return null;
+    return /^[-+]?\d+(?:\.\d+)?$/.test(cleaned) ? cleaned : null;
+  };
+
+  const splitMarket = (value) => {
+    const parts = String(value || "").split("|");
+    if (parts.length !== 2) return { country: "", currency: "" };
+    return { country: parts[0].trim(), currency: parts[1].trim().toUpperCase() };
+  };
+
+  const setStatus = (message, type) => {
+    if (!statusBox) return;
+    statusBox.innerHTML = `<div class="notice ${type}">${message}</div>`;
+  };
+
+  const escapeHtml = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+
+  const detailMessage = (payload, fallback) => {
+    const detail = payload?.detail;
+    if (detail?.errors?.length) {
+      return `${detail.message || fallback}<br>${detail.errors.map((item) => `- ${escapeHtml(item)}`).join("<br>")}`;
+    }
+    return escapeHtml(detail?.message || detail || payload?.message || fallback);
+  };
+
+  const postJson = async (url, payload, fallbackMessage) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(detailMessage(result, fallbackMessage));
+    return result;
+  };
+
+  const previewHtml = (preview) => {
+    const rows = (preview.groups || []).map((group) => `
+      <tr>
+        <td>${escapeHtml(group.source_group)}</td>
+        <td>${escapeHtml(group.brand)}</td>
+        <td>${escapeHtml(group.market_label)}</td>
+        <td>${Number(group.new_count || 0)}</td>
+        <td>${Number(group.supersede_count || 0)}</td>
+        <td>${group.warning ? escapeHtml(group.warning_text || "覆盖数量较多，请确认是否完整更新") : "-"}</td>
+      </tr>
+    `).join("");
+    return `
+      <strong>覆盖预览</strong><br>
+      本次将保存新报价：${Number(preview.new_quote_count || 0)} 条<br>
+      本次将覆盖旧报价：${Number(preview.supersede_quote_count || 0)} 条<br>
+      预计批次号：${escapeHtml(preview.estimated_batch_id || "-")}
+      ${rows ? `<div class="table-wrap"><table class="data-table compact-table"><thead><tr><th>来源群</th><th>品牌</th><th>地区/币种</th><th>新报价</th><th>覆盖旧报价</th><th>风险提示</th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
+    `;
+  };
+
+  const previewText = (preview) => {
+    const lines = [
+      `本次将保存新报价：${Number(preview.new_quote_count || 0)} 条`,
+      `本次将覆盖旧报价：${Number(preview.supersede_quote_count || 0)} 条`,
+      `预计批次号：${preview.estimated_batch_id || "-"}`
+    ];
+    if (preview.groups?.length) {
+      lines.push("", "覆盖范围：");
+      preview.groups.forEach((group) => {
+        lines.push(`- ${group.source_group} / ${group.brand} / ${group.market_label}：新报价 ${group.new_count} 条，覆盖旧报价 ${group.supersede_count} 条`);
+      });
+    }
+    if (preview.warnings?.length) {
+      lines.push("", "风险提示：", ...preview.warnings.map((item) => `- ${item}`));
+    }
+    lines.push("", "确认保存并覆盖旧报价？");
+    return lines.join("\n");
+  };
+
+  const requestCoveragePreview = (payload) => postJson(
+    form.dataset.savePreviewUrl,
+    payload,
+    "覆盖预览生成失败"
+  );
+
+  const savePayload = (payload) => postJson(
+    form.dataset.saveUrl,
+    payload,
+    "保存失败"
+  );
+
+  const collectRows = () => Array.from(form.querySelectorAll("[data-quote-row]"))
+    .filter((row) => !row.querySelector('[name^="delete_"]')?.checked)
+    .map((row) => {
+      const sourceLine = fieldValue(row, "source_line") || fieldValue(row, "source_text");
+      const market = fieldValue(row, "market");
+      const { country, currency } = splitMarket(market);
+      const rawSubtype = fieldValue(row, "raw_card_subtype") || fieldValue(row, "subtype");
+      const denomMin = optionalNumber(fieldValue(row, "denom_min"));
+      const denomMax = optionalNumber(fieldValue(row, "denom_max"));
+      const parsedRangeType = fieldValue(row, "range_type").toLowerCase();
+      let rangeType = "bounded";
+      if (denomMin === null && denomMax === null) {
+        rangeType = "unlimited";
+      } else if (denomMin !== null && denomMax !== null) {
+        rangeType = denomMin === denomMax ? "fixed" : "bounded";
+      } else if (denomMin !== null && denomMax === null) {
+        const sourceMarksOpen = /(?:以上|\+|>=|≥)/.test(sourceLine);
+        rangeType = parsedRangeType === "open" || sourceMarksOpen ? "open" : (parsedRangeType || "bounded");
+      } else {
+        rangeType = parsedRangeType || "bounded";
+      }
+      return {
+        line_no: optionalInteger(fieldValue(row, "line_no")),
+        source_line: sourceLine,
+        source_text: fieldValue(row, "source_text") || sourceLine,
+        brand: fieldValue(row, "brand"),
+        market,
+        country,
+        currency,
+        frontend_type: fieldValue(row, "frontend_type"),
+        subtype: rawSubtype,
+        raw_card_subtype: rawSubtype,
+        normalized_card_subtype: fieldValue(row, "normalized_card_subtype"),
+        processing_method: fieldValue(row, "processing_method") || "fast_card",
+        feedback_note: fieldValue(row, "feedback_note"),
+        multiplier: optionalNumber(fieldValue(row, "multiplier")),
+        denom_min: denomMin,
+        denom_max: denomMax,
+        range_type: rangeType,
+        supplier_rate: optionalDecimalString(fieldValue(row, "supplier_rate")),
+        status: fieldValue(row, "status") || "active",
+        requirements: fieldValue(row, "requirements"),
+        confidence: optionalNumber(fieldValue(row, "confidence")) ?? 0.5,
+        parse_note: fieldValue(row, "parse_note"),
+        received_at: fieldValue(row, "received_at"),
+        expires_at: fieldValue(row, "expires_at")
+      };
+    });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const supplierGroup = parseSupplierInput?.value.trim() || form.dataset.supplierGroup || "";
+    if (!supplierGroup) {
+      setStatus("请先填写来源群/供应商，再确认保存报价。", "error");
+      return;
+    }
+
+    const rows = collectRows();
+
+    if (!rows.length) {
+      setStatus("没有可保存的报价行。", "warning");
+      return;
+    }
+
+    const errors = [];
+    rows.forEach((row, index) => {
+      const rowLabel = `第${row.line_no || index + 1}行`;
+      if (!row.brand) errors.push(`${rowLabel}：品牌未确认。报价覆盖需要明确 来源群 + 品牌 + 地区/币种，请先手动选择后再保存`);
+      if (!row.market) errors.push(`${rowLabel}：地区/币种未确认。报价覆盖需要明确 来源群 + 品牌 + 地区/币种，请先手动选择后再保存`);
+      if (!row.frontend_type) errors.push(`${rowLabel}：缺少前台类型`);
+      if (!row.raw_card_subtype) errors.push(`${rowLabel}：缺少原始卡细分`);
+      if (!row.normalized_card_subtype || row.normalized_card_subtype === "待确认") errors.push(`${rowLabel}：统一卡细分待确认`);
+      const openEndedRange = row.denom_min !== null
+        && row.denom_max === null
+        && row.range_type === "open";
+      if ((row.denom_min === null) !== (row.denom_max === null) && !openEndedRange) errors.push(`${rowLabel}：面额范围不完整，请同时填写上下限、全部留空，或使用“以上/+/>=”表示无上限`);
+      if (row.status === "active" && row.supplier_rate === null) errors.push(`${rowLabel}：缺少供应商报价`);
+    });
+    if (errors.length) {
+      setStatus(`保存前请先修正：<br>${errors.map((item) => `- ${item}`).join("<br>")}`, "error");
+      return;
+    }
+
+    const payload = {
+      supplier_group: supplierGroup,
+      operator: operatorInput?.value.trim() || "",
+      confirm_safe_only: false,
+      rows
+    };
+
+    saveButton.disabled = true;
+    saveButton.textContent = "生成预览中...";
+    setStatus(`正在生成 ${rows.length} 条报价的覆盖预览...`, "info");
+
+    try {
+      const preview = await requestCoveragePreview(payload);
+      setStatus(previewHtml(preview), preview.warnings?.length ? "warning" : "info");
+      if (!window.confirm(previewText(preview))) {
+        saveButton.disabled = false;
+        saveButton.textContent = "确认保存报价";
+        return;
+      }
+      saveButton.textContent = "保存中...";
+      setStatus(`正在保存 ${rows.length} 条报价，并软覆盖旧报价...`, "info");
+      const result = await savePayload({...payload, confirm_supersede: true});
+      const savedCount = Number(result.saved_count || 0);
+      const supersededCount = Number(result.superseded_ids?.length || 0);
+      setStatus(`本次已保存 ${savedCount} 条报价，覆盖旧报价 ${supersededCount} 条，APP 后台建议报价已重新计算。`, "success");
+      window.location.href = result.redirect_url || `${form.dataset.redirectBase}?saved=1&saved_count=${encodeURIComponent(savedCount)}`;
+    } catch (error) {
+      setStatus(`保存失败：${error.message || "请稍后重试"}`, "error");
+      saveButton.disabled = false;
+      saveButton.textContent = "确认保存报价";
+    }
+  });
+
+  safeConfirmButton?.addEventListener("click", async () => {
+    const supplierGroup = parseSupplierInput?.value.trim() || form.dataset.supplierGroup || "";
+    const rows = collectRows();
+    if (!supplierGroup || !rows.length) {
+      setStatus(!supplierGroup ? "请先填写来源群/供应商。" : "没有可确认的报价行。", "error");
+      return;
+    }
+    safeConfirmButton.disabled = true;
+    try {
+      const basePayload = {
+        supplier_group: supplierGroup,
+        operator: operatorInput?.value.trim() || "",
+        rows
+      };
+      const preview = await postJson(form.dataset.previewUrl, basePayload, "确认摘要生成失败");
+      const summary = [
+        `本次可确认：${preview.confirmable_count} 条`,
+        `需要人工确认：${preview.manual_count} 条`,
+        `新增报价：${preview.new_count} 条`,
+        `更新报价：${preview.update_count} 条`,
+        `价格上涨：${preview.price_up_count} 条`,
+        `价格下降：${preview.price_down_count} 条`,
+        `预计生成批次号：${preview.estimated_batch_id}`
+      ].join("\n");
+      if (!window.confirm(`${summary}\n\n确认保存可确认项？`)) return;
+      const coveragePreview = await requestCoveragePreview({...basePayload, confirm_safe_only: true});
+      setStatus(previewHtml(coveragePreview), coveragePreview.warnings?.length ? "warning" : "info");
+      if (!window.confirm(previewText(coveragePreview))) return;
+      const result = await savePayload({...basePayload, confirm_safe_only: true, confirm_supersede: true});
+      const rowElements = Array.from(form.querySelectorAll("[data-quote-row]"))
+        .filter((row) => !row.querySelector('[name^="delete_"]')?.checked);
+      preview.rows.filter((item) => item.safe).forEach((item) => rowElements[item.index]?.remove());
+      setStatus(
+        `本次新增/更新 ${result.saved_count} 条报价<br>批次号：<strong>${result.quote_batch_id}</strong><br>` +
+        `需要人工确认：${result.manual_count} 条<br>` +
+        `<form method="post" action="/quote-batches/${result.quote_batch_id}/revoke" class="inline-form" onsubmit="return confirm('确认撤回本批报价？撤回后不再参与匹配，但历史保留。');">` +
+        `<input type="hidden" name="reason" value="一键确认批次撤回"><button class="button danger small" type="submit">撤回本批报价</button></form>`,
+        "success"
+      );
+    } catch (error) {
+      setStatus(`一键确认失败：${error.message || "请稍后重试"}`, "error");
+    } finally {
+      safeConfirmButton.disabled = false;
+    }
+  });
+})();
+</script>
+{% endif %}
+<script>
+(() => {
+  document.querySelectorAll("[data-suggestion-detail]").forEach((button) => {
+    button.addEventListener("click", () => {
+      alert(button.dataset.suggestionDetail || "暂无详情");
+    });
+  });
+  const optionsForBrand = (brand) => brand === "Apple"
+    ? ["卡图", "竖卡", "代码", "电子卡"]
+    : ["卡图", "代码", "电子卡"];
+  document.querySelectorAll("[data-quote-row]").forEach((row) => {
+    const brandSelect = row.querySelector('[name^="brand_"]');
+    const subtypeSelect = row.querySelector('[name^="normalized_card_subtype_"]');
+    if (!brandSelect || !subtypeSelect) return;
+    const refresh = () => {
+      const previous = subtypeSelect.value;
+      const options = optionsForBrand(brandSelect.value);
+      subtypeSelect.replaceChildren(...options.map((value) => new Option(value, value)));
+      subtypeSelect.value = options.includes(previous) ? previous : "卡图";
+    };
+    brandSelect.addEventListener("change", refresh);
+  });
+})();
+</script>
+{% endblock %}

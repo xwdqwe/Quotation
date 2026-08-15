@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+cardsabi.sqlite3
+.pytest_cache/
+.env
+.env.*
+auth.env
+deploy/*.env

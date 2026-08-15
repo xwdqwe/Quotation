@@ -1,0 +1,44 @@
+<div class="table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>排名</th>
+        <th>来源群/供应商</th>
+        <th>供应商报价</th>
+        <th>地区/币种</th>
+        <th>统一细分</th>
+        <th>原始细分</th>
+        <th>面额范围</th>
+        <th>倍数</th>
+        <th>处理方式</th>
+        <th>状态</th>
+        <th>限制条件</th>
+        <th>原始报价文本</th>
+        <th>录入时间</th>
+        <th>过期时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for quote in result_rows %}
+      <tr>
+        <td>第{{ quote.rank }}名</td>
+        <td>{{ quote.supplier_group }}</td>
+        <td><strong>{{ quote.supplier_rate|fmt }}</strong></td>
+        <td>{{ quote.market_label }}</td>
+        <td>{{ quote.normalized_card_subtype or '-' }}</td>
+        <td>{{ quote.raw_card_subtype or '-' }}</td>
+        <td>{% if quote.denom_min is none and quote.denom_max is none %}范围不限{% elif quote.denom_min is not none and quote.denom_max is none %}{{ quote.denom_min|fmt }}以上{% elif quote.denom_min == quote.denom_max %}{{ quote.denom_min|fmt }}{% else %}{{ quote.denom_min|fmt }} - {{ quote.denom_max|fmt }}{% endif %}</td>
+        <td>{{ quote.multiplier|fmt }}</td>
+        <td>{{ quote.processing_label }}</td>
+        <td><span class="badge status-{{ quote.status }}">{{ status_label(quote.status) }}</span></td>
+        <td>{{ quote.requirements or '-' }}</td>
+        <td class="wide">{{ quote.source_line or quote.source_text }}</td>
+        <td>{{ quote.updated_at or quote.received_at }}</td>
+        <td>{{ quote.expires_at or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="14" class="empty">暂无符合条件的可用报价。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

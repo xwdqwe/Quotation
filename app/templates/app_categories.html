@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+{% block title %}APP 后台分类库{% endblock %}
+
+{% block content %}
+<div class="page-title">
+  <h1>APP 后台分类库</h1>
+  <a class="button ghost" href="{{ request.app.url_path_for('quote_page') }}">返回建议报价</a>
+</div>
+
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+{% if import_report.success_count or import_report.skip_count %}
+<div class="notice info">
+  CSV 导入完成：成功 {{ import_report.success_count }} 条，跳过 {{ import_report.skip_count }} 条。
+  {% if import_report.errors %}
+  <div class="wrap-text">错误：{{ import_report.errors | join("；") }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <h2>批量解析 APP 分类名称</h2>
+      <p class="muted">一行一个后台分类名。没有明确写细分时，会自动拆成“卡图”和“代码”两条。</p>
+    </div>
+  </div>
+  <form method="post" action="{{ request.app.url_path_for('parse_app_category_names_route') }}" class="stack-form">
+    <textarea name="category_names_text" rows="7" placeholder="一行一个分类，例如：
+Amazon|AUD澳大利亚|25-200|1倍数
+APPLE|CA加拿大|10-300|5倍数
+APPLE|US美国|10-190|5倍数|卡图">{{ category_names_text }}</textarea>
+    <div class="filter-actions">
+      <button class="button primary" type="submit">解析分类</button>
+    </div>
+  </form>
+
+  {% if parsed_category_rows %}
+  <form method="post" action="{{ request.app.url_path_for('save_parsed_app_categories_route') }}">
+    <input type="hidden" name="row_count" value="{{ parsed_category_rows|length }}">
+    <div class="table-wrap">
+      <table class="data-table compact">
+        <thead>
+          <tr>
+            <th>分类名称</th>
+            <th>品牌</th>
+            <th>地区/币种</th>
+            <th>统一细分</th>
+            <th>下限</th>
+            <th>上限</th>
+            <th>倍数</th>
+            <th>当前 APP 价</th>
+            <th>状态</th>
+            <th>删除</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in parsed_category_rows %}
+          {% set i = loop.index0 %}
+          <tr>
+            <td class="wide">
+              <input type="hidden" name="line_no_{{ i }}" value="{{ row.line_no or loop.index }}">
+              <input name="category_name_{{ i }}" value="{{ row.category_name }}" required>
+            </td>
+            <td>
+              <select name="brand_{{ i }}" required>
+                {% if row.brand %}<option value="{{ row.brand }}" selected>{{ row.brand }}</option>{% endif %}
+                <option value="">待选择</option>
+                {% for brand in brand_options %}
+                <option value="{{ brand.name }}" {% if row.brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              <select name="market_{{ i }}">
+                <option value="">待选择</option>
+                {% if row.market %}<option value="{{ row.market }}" selected>{{ row.market_display }}</option>{% endif %}
+                {% for market in market_options %}
+                <option value="{{ market.value }}" {% if row.market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              <select name="normalized_subtype_{{ i }}" required>
+                {% for option in ["卡图", "代码", "电子卡", "竖卡", "待确认"] %}
+                <option value="{{ option }}" {% if row.normalized_subtype == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td><input name="denom_min_{{ i }}" value="{{ row.denom_min|fmt if row.denom_min is not none else '' }}"></td>
+            <td><input name="denom_max_{{ i }}" value="{{ row.denom_max|fmt if row.denom_max is not none else '' }}"></td>
+            <td><input name="multiplier_{{ i }}" value="{{ row.multiplier|fmt if row.multiplier is not none else '' }}"></td>
+            <td><input name="current_app_price_{{ i }}" value="{{ row.current_app_price }}"></td>
+            <td>
+              <select name="status_{{ i }}">
+                <option value="active" {% if row.status == "active" %}selected{% endif %}>启用</option>
+                <option value="pending" {% if row.status == "pending" %}selected{% endif %}>待确认</option>
+                <option value="disabled" {% if row.status == "disabled" %}selected{% endif %}>停用</option>
+              </select>
+            </td>
+            <td class="center"><input type="checkbox" name="delete_{{ i }}"></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="filter-actions">
+      <button class="button primary" type="submit">确认保存分类</button>
+    </div>
+  </form>
+  {% endif %}
+
+  {% if ignored_category_items %}
+  <div class="notice warning">
+    有 {{ ignored_category_items|length }} 行未解析，会被忽略。
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <h2>{% if edit_category %}编辑 APP 分类{% else %}新增 APP 分类{% endif %}</h2>
+      <p class="muted">卡类型和范围类型由系统自动判断，页面只保留客服需要核对的字段。</p>
+    </div>
+    {% if edit_category %}
+    <a class="button ghost small" href="{{ request.app.url_path_for('app_categories_page') }}">新增模式</a>
+    {% endif %}
+  </div>
+  <form method="post" action="{{ request.app.url_path_for('save_app_category_route') }}" class="form-grid">
+    {% if edit_category %}<input type="hidden" name="id" value="{{ edit_category.id }}">{% endif %}
+    <label>管理后台分类名称<input name="category_name" value="{{ edit_category.category_name if edit_category else '' }}" required></label>
+    <label>
+      品牌
+      <select name="brand" required>
+        <option value="">请选择</option>
+        {% for brand in brand_options %}
+        <option value="{{ brand.name }}" {% if edit_category and edit_category.brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      地区/币种
+      <select name="market" required>
+        <option value="">请选择</option>
+        {% for market in market_options %}
+        <option value="{{ market.value }}" {% if edit_category and edit_category.market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      统一细分
+      <select name="normalized_subtype" required>
+        {% for option in ["卡图", "代码", "电子卡", "竖卡", "待确认"] %}
+        <option value="{{ option }}" {% if edit_category and edit_category.normalized_subtype == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>面额下限<input name="denom_min" value="{{ edit_category.denom_min|fmt if edit_category and edit_category.denom_min is not none else '' }}" placeholder="范围不限可留空"></label>
+    <label>面额上限<input name="denom_max" value="{{ edit_category.denom_max|fmt if edit_category and edit_category.denom_max is not none else '' }}" placeholder="开放范围可留空"></label>
+    <label>倍数<input name="multiplier" value="{{ edit_category.multiplier|fmt if edit_category and edit_category.multiplier is not none else '' }}" placeholder="不限可留空"></label>
+    <label>当前 APP 记录价<input name="current_app_price" value="{{ edit_category.current_app_price|fmt if edit_category and edit_category.current_app_price is not none else '' }}" placeholder="可为 0 或留空"></label>
+    <label>
+      状态
+      <select name="status">
+        <option value="active" {% if not edit_category or edit_category.status == "active" %}selected{% endif %}>启用</option>
+        <option value="pending" {% if edit_category and edit_category.status == "pending" %}selected{% endif %}>待确认</option>
+        <option value="disabled" {% if edit_category and edit_category.status == "disabled" %}selected{% endif %}>停用</option>
+      </select>
+    </label>
+    <label class="full-span">备注<input name="note" value="{{ edit_category.source_note if edit_category else '' }}"></label>
+    <div class="filter-actions">
+      <button class="button primary" type="submit">保存分类</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <h2>CSV 导入 / 导出</h2>
+      <p class="muted">支持精简字段；如果 CSV 只有 category_name，也会先按分类名解析。</p>
+    </div>
+    <a class="button ghost" href="{{ request.app.url_path_for('export_app_categories') }}">导出 CSV</a>
+  </div>
+  <form method="post" action="{{ request.app.url_path_for('import_app_categories') }}" enctype="multipart/form-data" class="inline-form">
+    <input type="file" name="csv_file" accept=".csv,text/csv" required>
+    <button class="button primary" type="submit">导入 CSV</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>筛选</h2>
+  <form method="get" action="{{ request.app.url_path_for('app_categories_page') }}" class="filter-grid">
+    <label>分类名<input name="keyword" value="{{ filters.keyword }}" placeholder="APPLE|CA"></label>
+    <label>
+      品牌
+      <select name="brand">
+        <option value="">全部</option>
+        {% for brand in brand_options %}
+        <option value="{{ brand.name }}" {% if filters.brand == brand.name %}selected{% endif %}>{{ brand.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      地区/币种
+      <select name="market">
+        <option value="">全部</option>
+        {% for market in market_options %}
+        <option value="{{ market.value }}" {% if filters.market == market.value %}selected{% endif %}>{{ market.display_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      统一细分
+      <select name="normalized_subtype">
+        <option value="">全部</option>
+        {% for option in ["卡图", "代码", "电子卡", "竖卡", "待确认"] %}
+        <option value="{{ option }}" {% if filters.normalized_subtype == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      状态
+      <select name="status">
+        <option value="">全部</option>
+        <option value="active" {% if filters.status == "active" %}selected{% endif %}>启用</option>
+        <option value="pending" {% if filters.status == "pending" %}selected{% endif %}>待确认</option>
+        <option value="disabled" {% if filters.status == "disabled" %}selected{% endif %}>停用</option>
+      </select>
+    </label>
+    <div class="filter-actions">
+      <button class="button primary" type="submit">筛选</button>
+      <a class="button ghost" href="{{ request.app.url_path_for('app_categories_page') }}">清空</a>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>APP 分类列表</h2>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>管理后台分类名称</th>
+          <th>品牌</th>
+          <th>地区/币种</th>
+          <th>统一细分</th>
+          <th>面额范围</th>
+          <th>倍数</th>
+          <th>当前 APP 记录价</th>
+          <th>状态</th>
+          <th>更新时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for category in categories %}
+        <tr>
+          <td class="wide">
+            <span data-copy-text="{{ category.category_name }}">{{ category.category_name }}</span>
+            <button class="button tiny ghost" type="button" data-copy-button data-copy-value="{{ category.category_name }}">复制</button>
+          </td>
+          <td>{{ category.brand }}</td>
+          <td>{{ category.market_display }}</td>
+          <td>{{ category.normalized_subtype }}</td>
+          <td>{{ category.range_display }}</td>
+          <td>{{ category.multiplier|fmt if category.multiplier is not none else '-' }}</td>
+          <td>{{ category.current_app_price|fmt if category.current_app_price is not none else '-' }}</td>
+          <td>
+            <span class="badge status-{{ category.status }}">
+              {% if category.status == "active" %}启用{% elif category.status == "pending" %}待确认{% else %}停用{% endif %}
+            </span>
+          </td>
+          <td>{{ category.updated_at }}</td>
+          <td>
+            <a class="button tiny" href="{{ request.app.url_path_for('app_categories_page') }}?edit_id={{ category.id }}">编辑</a>
+            <form method="post" action="{{ request.app.url_path_for('toggle_app_category', category_id=category.id) }}" class="inline-form">
+              <input type="hidden" name="status" value="{{ 'disabled' if category.status == 'active' else 'active' }}">
+              <button class="button tiny ghost" type="submit">{{ "停用" if category.status == "active" else "启用" }}</button>
+            </form>
+            <form method="post" action="{{ request.app.url_path_for('delete_app_category_route', category_id=category.id) }}" class="inline-form" onsubmit="return confirm('确认删除这个 APP 分类？');">
+              <button class="button tiny danger" type="submit">删除</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="empty">暂无 APP 分类，请新增、解析或导入 CSV。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+document.querySelectorAll("[data-copy-button]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const value = button.dataset.copyValue || "";
+    try {
+      await navigator.clipboard.writeText(value);
+      button.textContent = "已复制";
+      setTimeout(() => { button.textContent = "复制"; }, 1200);
+    } catch {
+      window.prompt("复制分类名", value);
+    }
+  });
+});
+</script>
+{% endblock %}

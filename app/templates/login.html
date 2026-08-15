@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>登录 - Cardsabi 报价引擎</title>
+    <link rel="stylesheet" href="{{ request.app.url_path_for('static', path='styles.css') }}">
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-panel">
+        <div class="login-heading">
+          <span class="login-mark">C</span>
+          <div>
+            <h1>Cardsabi 报价引擎</h1>
+            <p>内部工具，请使用管理员账号登录</p>
+          </div>
+        </div>
+
+        {% if error %}
+          <div class="notice error" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" action="{{ request.app.url_path_for('login_submit') }}" class="stack">
+          <input type="hidden" name="next" value="{{ next_path }}">
+          <label>
+            账号
+            <input name="username" autocomplete="username" autofocus required>
+          </label>
+          <label>
+            密码
+            <input type="password" name="password" autocomplete="current-password" required>
+          </label>
+          <button class="button primary login-button" type="submit">登录</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
