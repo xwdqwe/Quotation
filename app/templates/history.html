@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}发送记录{% endblock %}
+
+{% block content %}
+<section class="page-heading">
+  <div>
+    <h1>发送记录</h1>
+    <p>仅保留最近 7 天。失败记录包含 Cardsabi 返回码，便于核对整批回滚原因。</p>
+  </div>
+  <a class="button ghost" href="{{ request.app.url_path_for('quote_page') }}">返回报价解析</a>
+</section>
+
+<section class="section-band">
+  {% if history %}
+  <div class="history-list">
+    {% for item in history %}
+    <article class="history-item">
+      <div class="history-summary">
+        <span class="badge status-{{ 'active' if item.status == 'success' else 'unavailable' }}">{{ "成功" if item.status == "success" else "失败" }}</span>
+        <strong>{{ item.merchant_number }} / {{ item.merchant_name }}</strong>
+        <span>{{ item.category_name or "品牌未确认" }}</span>
+        <span>解析 {{ item.parsed_count }} 条 / 发送 {{ item.sent_count }} 条</span>
+        <time>{{ item.created_at }}</time>
+      </div>
+      <div class="history-message">
+        <strong>接口结果：</strong>{{ item.response_code or "-" }} / {{ item.response_message or "-" }}
+        {% if item.operator %}；<strong>操作人：</strong>{{ item.operator }}{% endif %}
+      </div>
+      <details>
+        <summary>查看原始报价与发送内容</summary>
+        <div class="history-detail-grid">
+          <div><strong>原始报价</strong><pre>{{ item.source_text or "-" }}</pre></div>
+          <div><strong>发送内容</strong><pre>{{ item.request_json or "-" }}</pre></div>
+        </div>
+      </details>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">最近 7 天还没有发送记录。</p>
+  {% endif %}
+</section>
+{% endblock %}

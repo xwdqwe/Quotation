@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +24,13 @@ SAMPLE = """苹果卡：卡图
 
 
 class FakeRequest:
-    def __init__(self, supplier_group: str = "路由回归测试群", expire_hours: str | None = "6") -> None:
-        self.supplier_group = supplier_group
-        self.expire_hours = expire_hours
+    def __init__(self, merchant_number: str = "") -> None:
+        self.merchant_number = merchant_number
 
     async def form(self, **_: Any) -> dict[str, str]:
         result = {
-            "supplier_group": self.supplier_group,
+            "merchant_number": self.merchant_number,
+            "operator": "测试客服",
             "source_text": SAMPLE,
             "default_brand": "",
             "default_market": "",
@@ -39,18 +38,40 @@ class FakeRequest:
             "default_multiplier": "",
             "default_subtype": "",
         }
-        if self.expire_hours is not None:
-            result["default_expire_hours"] = self.expire_hours
         return result
+
+
+class FakeConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def close(self):
+        return None
 
 
 def test_quotes_parse_route() -> None:
     original_render = main_module.render
+    original_get_connection = main_module.get_connection
+    original_quote_context = main_module._quote_context
     main_module.render = lambda request, template, context: context
+    main_module.get_connection = FakeConnection
+    main_module._quote_context = lambda conn: {
+        "brand_options": [],
+        "market_options": [],
+        "merchant_options": [],
+        "brand_mappings": {},
+        "catalog_status": {},
+        "api_configured": False,
+    }
     try:
         context = asyncio.run(main_module.parse_quotes(FakeRequest()))
     finally:
         main_module.render = original_render
+        main_module.get_connection = original_get_connection
+        main_module._quote_context = original_quote_context
 
     rows = context["parsed_rows"]
     assert len(rows) == 6, len(rows)
@@ -83,19 +104,8 @@ def test_quotes_parse_route() -> None:
     ]
     assert actual == expected
 
-    original_render = main_module.render
-    main_module.render = lambda request, template, context: context
-    try:
-        empty_group_context = asyncio.run(main_module.parse_quotes(FakeRequest("", None)))
-    finally:
-        main_module.render = original_render
-    assert empty_group_context["supplier_group"] == ""
-    assert empty_group_context["default_expire_hours"] == 24
-    assert len(empty_group_context["parsed_rows"]) == 6
-    for row in empty_group_context["parsed_rows"]:
-        received = datetime.fromisoformat(row["received_at"])
-        expires = datetime.fromisoformat(row["expires_at"])
-        assert (expires - received).total_seconds() == 24 * 60 * 60
+    assert context["merchant_number"] == ""
+    assert context["operator"] == "测试客服"
 
 
 if __name__ == "__main__":

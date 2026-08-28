@@ -1,19 +1,39 @@
 # cardsabi-quote-engine
 
-Cardsabi 报价引擎 MVP。第一版只做内部网页工具，不监听微信、不做 OCR、不自动更新 Cardsabi 后台、不调用 Cardsabi API。
+Cardsabi 内部报价解析器。系统只负责：
 
-## 功能范围
+1. 粘贴微信群报价。
+2. 解析并人工校正标准字段。
+3. 校验一个商家、一个品牌的完整报价批次。
+4. 发送到 Cardsabi 管理后台。
 
-- 群报价解析：客服粘贴微信群报价，系统用规则解析为可编辑表格。
-- 报价保存：人工校正后保存到 SQLite 报价库。
-- 大段导入：支持一次粘贴长段微信群报价，解析结果保存使用 JSON 批量提交，不受普通表单字段数量限制。
-- 标准品牌库/别名库：解析时用品牌别名归一到标准品牌，页面用下拉选择，减少手输脏数据。
-- 标准地区/币种库：页面用一个「地区/币种」下拉，保存时拆成 `country` 和 `currency`。
-- 散卡/整卡倍数规则：散卡表示 5 倍数，整卡表示 50 倍数，不作为内部细分保存。
-- APP 建议报价：按 `品牌 + 国家 + 币种 + 前台类型 + 统一细分 + 倍数 + 面额范围` 聚合，使用 active、未过期且供应群正常的报价，取当前最高可用出货价生成待处理建议。
-- 用户卡出货匹配：按卡属性匹配当前供应商报价，输出 Top 3 推荐出货群。
-- 供应商报价库：按品牌、国家、类型、细分、处理方式、来源群、状态筛选查看。
-- 清空测试数据：本地 MVP 调试时可清空报价、APP 建议价和匹配日志。
+出货匹配、报价保存、APP 建议价、暂停或恢复报价均由 Cardsabi 管理后台负责，本项目不再维护这些业务。
+
+## 当前边界
+
+- 不监听微信，不做 OCR。
+- 不在本地保存供应商报价库。
+- 不做用户卡出货匹配。
+- 不计算 APP 后台建议报价。
+- 不根据“暂停/不可用”文本自动关闭 Cardsabi 报价。
+- 每次发送只允许一个 Cardsabi 商家和一个标准品牌。
+- 发送成功后，Cardsabi 按“商家 + 品牌”全量替换；该商家的其他品牌不受影响。
+- Cardsabi 任意一条校验失败时整批回滚，本地只记录失败结果。
+
+## 字段转换
+
+- 卡类型（`cardType`）：`Physical`、`Code`、`ECode`，三者是不同报价，不相互覆盖。
+- 卡头（`bin`）：有值时发送，并参与 Cardsabi 同报价条件判断。
+- 卡速（`cardSpeed`）：在“接口设置”按品牌配置 `Fast` 或 `Slow`，不从快卡、快刷、慢刷推断。
+- 商家备注（`merchantRemark`）：包含处理方式、反馈时间、状态和对接群备注；无内容时发送 `-`；最多 1000 字符。
+- 国家（`country`）：解析页面显示地区/币种，发送时只提交 Cardsabi 国家简称。
+- 报价（`price`）：以字符串发送，最多 15 位小数，避免小数精度丢失。
+- 范围不限：转换为 `10-100000`；有倍数时，下限会调整为第一个合法倍数。
+- `200以上`：转换为 `200-100000`。
+- 固定面值：`minimum == maximum`。
+- 倍数范围：上下限必须能被 `multipleValue` 整除，且下限不能小于倍数。
+
+同一个 Cardsabi 报价条件下，如果横卡、白卡等多个原始物理细分价格不同，系统取较低价格发送，并在 `merchantRemark` 写明各原始细分价格。
 
 ## 安装
 
@@ -21,53 +41,55 @@ Cardsabi 报价引擎 MVP。第一版只做内部网页工具，不监听微信�
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
-
-## 初始化数据库
-
-```powershell
 python scripts\init_db.py
 ```
 
-脚本会创建 `cardsabi.sqlite3`，并写入一组示例报价。
+## 接口配置
 
-## 清空测试数据
+测试环境默认地址：
 
-报价库页面提供「清空测试数据」按钮，点击后会二次确认，并清空以下表：
+```text
+http://18.232.59.40:8001/cardsabi
+```
 
-- `supplier_quotes`
-- `app_price_records`
-- `app_price_suggestions`
-- `shipment_match_logs`
+通过环境变量配置：
 
-这个功能只用于本地 MVP 测试，不删除表结构，也不会调用 Cardsabi 后台。清空后 APP 建议报价会变为空；如需重新写入示例数据，可再次运行 `python scripts\init_db.py`。
+```text
+CARDSABI_API_BASE_URL=http://18.232.59.40:8001/cardsabi
+CARDSABI_API_USERNAME=测试接口账号
+CARDSABI_API_PASSWORD=测试接口密码
+CARDSABI_API_TIMEOUT_SECONDS=30
+```
 
-## 标准库
+账号和密码不得提交到 GitHub。配置后进入“接口设置”，依次：
 
-系统启动或初始化数据库时，会自动维护三张标准表：
+1. 同步 Cardsabi 商家、品牌和国家。
+2. 将解析品牌映射到 Cardsabi `categoryName`。
+3. 为每个会发送的品牌设置 `cardSpeed=Fast/Slow`。
+4. 核对解析地区到 Cardsabi 国家简称的映射。
 
-- `card_brands`：标准品牌名，例如 Apple、Razer、Xbox、Steam、Roblox、PSN、Google Play、Amazon、Paysafecard。
-- `brand_aliases`：品牌别名，例如 `itunes`、`苹果卡` 会归一为 Apple，`绿蛇`、`欧蛇` 会归一为 Razer，`美亚` 会归一为 Amazon。
-- `card_markets`：标准地区/币种，例如 `US / USD`、`Saudi Arabia / SAR`、`New Zealand / NZD`。
+## 使用流程
 
-新增品牌或别名时，可以在 `app/standards.py` 的 `BRAND_SEEDS` 中补充；新增地区/币种时，在 `MARKET_SEEDS` 中补充。下次启动或运行 `python scripts\init_db.py` 后会同步写入 SQLite。
+1. 进入 `/quotes`。
+2. 选择 Cardsabi 商家。解析前可以暂不选择，发送前必须选择。
+3. 粘贴一种品牌的完整报价并解析。
+4. 校正品牌、地区、卡类型、原始细分、面额、倍数、价格、处理方式、BIN 和备注。
+5. 点击“发送到 Cardsabi”。
+6. 系统再次校验单品牌、目录映射、面额和备注长度。
+7. 二次确认后整批发送；成功或失败记录可在 `/history` 查看。
 
-## 解析规则补充
+暂停或不可用报价不会发送，页面会提示客服到 Cardsabi 后台人工关闭。发前问和风险状态仍可发送，并写入商家备注。
 
-- `USD散卡`、`CAD整卡`、`AUD散卡`、`GBP整卡`、`EUR散卡` 这类币种和描述粘在一起的写法，会先识别币种对应的地区/币种。
-- `散卡` 自动标记 `multiplier=5`，`整卡` 自动标记 `multiplier=50`；如果文本里同时写了明确倍数，以明确倍数为准。`散卡` 遇到 `50倍`、`整卡` 遇到 `5倍` 会在解析备注里提示冲突。
-- `横白卡图` 会拆成 `横卡` 和 `白卡` 两条；`横竖卡图` 会拆成 `横卡` 和 `竖卡`；普通 `卡图` 才保存为 `卡图`。
-- `极速快刷 50倍数 1-5min`、`快刷网单` 这类没有明确报价的说明行只更新上下文，不生成报价；后续报价会继承对应的处理方式、倍数和反馈时间。
-- 反馈时间会单独保存到 `feedback_note`：`极速快刷` 显示为 `极速快刷，约1-5分钟`，`快刷网单` 显示为 `快刷网单，约10-15分钟`，普通 `快刷/快网` 显示为 `快刷，约5-20分钟`。
-- `/quotes` 页面支持顶部默认值：默认品牌、默认地区/币种、默认处理方式、默认倍数。默认值只填补解析为空的字段，不覆盖行内明确识别到的内容。
-- 默认报价有效期为 24 小时；客服可以在解析前改成 6 小时或其他时长，保存时按页面填写值计算 `expires_at`。
-- 来源群/供应商在解析时可以留空，方便先测试解析结果；确认保存报价时仍为必填。
-- `代码50=5.25`、`代码:50=5.25`、`代码：50=5.25`、`代码 50=5.25` 都会识别为 `code / 代码/卡密`。
-- `香港HK 0.75（500-1500 包50H）只要稳卡`、`美区US 5.35（15-100）` 这类无等号报价，会在同时识别到标准市场、括号前报价和括号内范围时生成报价。
-- 无等号报价的括号内非范围内容和括号外说明会写入限制条件，例如 `包50H；只要稳卡`。
-- `100/150`、`200/300/400/500` 会按固定面值列表拆成多条单张报价；只有 `100-500`、`100~500` 这类写法才按范围解析。
-- `横白` 和 `卡图` 中间夹着 `散卡`、`整卡` 等描述时，仍会拆成 `横卡` 和 `白卡`，不会额外生成普通 `卡图`。
-- 出货匹配页输入面额时，如果面额能被 50 整除，会默认建议 `multiplier=50`；如果能被 5 整除但不能被 50 整除，会默认建议 `multiplier=5`，客服仍可手动修改。
+## 目录与历史数据
+
+SQLite 只用于：
+
+- 标准品牌、别名和地区解析库。
+- Cardsabi 商家、品牌和国家目录缓存。
+- 品牌卡速与国家简称映射。
+- 最近 7 天的发送成功/失败记录。
+
+旧版本的报价、匹配和建议价表不会在迁移时物理删除，但新页面和新发送流程不再读取这些表。
 
 ## 启动
 
@@ -75,150 +97,75 @@ python scripts\init_db.py
 python -m uvicorn app.main:app --reload
 ```
 
-打开：
-
-```text
-http://127.0.0.1:8000
-```
+本机打开：`http://127.0.0.1:8000`。
 
 ## 公网登录保护
 
-本地开发默认不启用登录。部署到公网服务器时，先生成管理员账号和随机密码：
+生成管理员账号和随机密码：
 
-```bash
-python scripts/create_admin_credentials.py --username cardsabi
+```powershell
+python scripts\create_admin_credentials.py --username cardsabi
 ```
 
-脚本会输出一次性明文密码、密码哈希和会话密钥。把输出的环境变量保存到服务器的 systemd `EnvironmentFile`，不要把明文密码或环境变量文件提交到代码仓库。启动服务前必须设置：
+将输出保存到服务器 `/etc/cardsabi-quote-engine.env`，权限设为 `600`：
 
 ```text
 CARDSABI_AUTH_ENABLED=1
 CARDSABI_ADMIN_USERNAME=cardsabi
-CARDSABI_ADMIN_PASSWORD_HASH=脚本生成的哈希
-CARDSABI_SESSION_SECRET=脚本生成的随机密钥
+CARDSABI_ADMIN_PASSWORD_HASH=生成的哈希
+CARDSABI_SESSION_SECRET=生成的随机密钥
 CARDSABI_COOKIE_SECURE=0
 CARDSABI_SESSION_HOURS=12
 ```
 
-没有域名、直接通过服务器 IP 使用 HTTP 时，`CARDSABI_COOKIE_SECURE=0`。这可以阻止陌生人直接操作系统，但 HTTP 不加密账号、密码和报价内容；条件允许时仍建议使用 HTTPS。启用 HTTPS 后把 `CARDSABI_COOKIE_SECURE` 改为 `1`。
+无域名且仍使用 HTTP 时只能设置 `CARDSABI_COOKIE_SECURE=0`，账号、密码和报价内容不会被传输加密。正式环境应切换 HTTPS 后设置为 `1`。
 
-## 1核1GB服务器部署
+## 服务器
 
-当前项目可以部署到 Ubuntu 24.04、1 vCPU、1GB 内存、25GB SSD 的服务器。生产环境使用 Nginx 监听服务器公网 IP，Uvicorn 仅监听 `127.0.0.1:8000`，并固定为单 worker。部署模板位于：
+Ubuntu 24.04、1 vCPU、1GB 内存、25GB SSD/NVMe 足够当前内部使用。建议配置 1GB Swap。部署模板：
 
 - `deploy/cardsabi-quote-engine.service`
 - `deploy/nginx.conf`
 
-服务器需要安装 `python3-venv`、`nginx` 和 `sqlite3`。应用目录使用 `/opt/cardsabi-quote-engine`，认证环境变量保存到 `/etc/cardsabi-quote-engine.env`，该文件权限应设置为 `600`，不能提交到 GitHub。
+Uvicorn 只监听 `127.0.0.1:8000`，Nginx 对外提供入口，防火墙仅开放 SSH 和网页端口。
 
-1GB 内存服务器建议额外配置 1GB Swap。防火墙只向公网开放 HTTP `80` 和管理员使用的 SSH `22`；Uvicorn 的 `8000` 端口不要向公网开放。
+## 生产上线阻断项
+
+在切换正式 Cardsabi 接口前，必须再次确认并完成：
+
+1. 使用 HTTPS，不允许生产报价和凭据走明文 HTTP。
+2. 使用服务端接口密钥或签名认证，不继续使用网页账号密码作为长期生产认证。
+3. 让 Cardsabi 将报价解析服务器公网 IP `167.179.69.149` 加入接口白名单。
+4. 用一个测试商家、一个测试品牌执行真实 POST，并确认“商家 + 品牌”全量替换和整批回滚结果。
 
 ## 回归测试
-
-解析器关键样本回归测试：
 
 ```powershell
 python scripts\test_parser_cases.py
 python scripts\test_quotes_parse_route.py
-python scripts\test_quote_workflows.py
+python scripts\test_cardsabi_sync.py
+python scripts\test_auth.py
 ```
 
-当前测试覆盖极速快刷上下文、代码固定面值、`[US横白】` 混合括号、固定面值列表拆分、地区报价、两行组合报价、后置备注回填、`#` 注释行和随机字符串忽略。
+- `test_parser_cases.py`：保留微信群复杂报价的解析回归。
+- `test_quotes_parse_route.py`：验证 `/quotes/parse` 页面链路。
+- `test_cardsabi_sync.py`：验证单品牌限制、卡类型、国家映射、范围转换、价格合并、小数精度、备注长度和 7 天历史清理。
+- `test_auth.py`：验证公网登录会话。
 
-`test_quotes_parse_route.py` 覆盖 `/quotes/parse` 页面表单链路，并验证“地区/币种 + 报价 + 括号面额范围”样本生成 6 条报价。
-
-`test_quote_workflows.py` 覆盖卡细分归一化、前三名报价、供应群暂停/待刷新/恢复、批次撤回、一键确认筛选、新报价软覆盖旧报价、供应商报价库默认隐藏历史报价、APP 后台建议价确认和操作日志。
-
-## 报价批次与供应群状态
-
-- 每次确认保存会生成 `quote_batch_id`，格式为 `QBYYYYMMDD_序号`。
-- 撤回批次使用 `revoked` 软状态，不删除报价历史。
-- 供应群状态流为 `normal -> paused -> needs_refresh -> normal`。
-- `needs_refresh` 群必须存在进入待刷新之后的新确认报价，才允许恢复 `normal`。
-- 出货匹配只使用 `status=active`、未过期且供应群为 `normal` 的报价。
-- 同一匹配 key 每个供应群只取最新有效报价，再按供应商报价降序生成激进价、建议价、安全价。
-
-## 数据库迁移
-
-启动应用或运行下面命令会自动执行兼容迁移，不会硬删除旧报价：
-
-```powershell
-python scripts\init_db.py
-```
-
-主要新增字段：
-
-- `supplier_quotes.raw_card_subtype`
-- `supplier_quotes.normalized_card_subtype`
-- `supplier_quotes.quote_batch_id`
-- `supplier_quotes.supplier_group_id`
-- `supplier_quotes.confirmed_at`
-
-主要新增表：
-
-- `supplier_groups`
-- `quote_batches`
-- `operation_logs`
-
-## 示例使用流程
-
-1. 进入「群报价解析 / APP建议报价」。
-2. 来源群填写 `测试群`。
-3. 粘贴示例报价：
-
-```text
-Apple US 横卡 50-500 5.20 快卡
-苹果 美区 白卡 50-500 5.00 快卡
-Apple US 纯代码 50-500 5.40 快刷
-Amazon UK 实体卡 25-300 0.91 快卡 发前问
-Steam EUR 代码 10-200 0.88 慢刷
-```
-
-4. 点击「解析报价」，在表格里校正识别结果。
-5. 点击「确认保存报价」。页面会先显示覆盖预览，确认后把当前可见且未勾选删除的解析行组装为 JSON 批量提交，可处理大段群报价和 500 条以上解析记录。
-6. 页面下方查看 APP 后台建议报价。建议清单会持久保存，刷新或切换页面后仍显示所有未处理项；客服确认已在 APP 管理后台同步后，点击「已同步到管理后台」。如果当前没有可用报价且需要把后台价填 0，点击「已在管理后台填0」。
-7. 进入「用户卡出货匹配」，使用标准下拉字段填写卡属性，例如：
-
-```text
-品牌：Apple
-地区/币种：US / USD
-前台类型：physical
-人工细分：白卡
-面额：100
-倍数：50
-处理方式：不限
-```
-
-8. 点击「查询匹配」，系统会返回 Top 3 推荐出货群；如果没有完全匹配，会展示相近报价并标记仅供参考。
-
-### 新报价覆盖旧报价
-
-同一来源群、品牌、地区/币种保存新报价时，旧报价会被软覆盖为 `superseded / 已覆盖`，历史记录保留但不再参与出货匹配和 APP 后台建议报价。供应商报价库默认只显示当前有效报价；需要排查历史时，将「包含历史报价」切换为「是」。
-
-## 目录结构
+## 主要目录
 
 ```text
 app/
-  main.py              FastAPI 路由和页面入口
-  database.py          SQLite 建表、连接、示例数据
-  standards.py         标准品牌、别名、地区/币种配置
-  parsing.py           群报价解析和字段标准化
-  pricing.py           APP 建议报价计算
-  matching.py          用户卡出货匹配
-  templates/           Jinja2 页面模板
-  static/styles.css    基础样式
+  main.py               FastAPI 页面和发送入口
+  parsing.py            微信群报价解析器
+  cardsabi_client.py     Cardsabi 开放接口客户端
+  quote_sync.py         发送前校验、转换和合并
+  sync_store.py         目录映射与 7 天发送记录
+  database.py           SQLite 与解析标准库兼容层
+  templates/            报价、设置、历史页面
 scripts/
-  init_db.py           数据库初始化脚本
-SPEC.md                产品需求说明
-requirements.txt       Python 依赖
+  init_db.py
+  test_parser_cases.py
+  test_quotes_parse_route.py
+  test_cardsabi_sync.py
 ```
-
-## MVP 说明
-
-- 解析逻辑基于规则和正则，不依赖外部 AI API。
-- 无法高置信度识别的行会保留原文，并降低置信度，客服可在保存前人工修改。
-- 来源群/供应商在保存时必须填写；保存时前端和后端都会校验，避免报价无法追溯。
-- 品牌、地区/币种、前台类型、内部细分使用标准下拉字段，出货匹配页面也使用同一套标准字段。
-- APP 建议报价不会写入 Cardsabi 后台；系统只在 `app_price_suggestions` 中维护待处理建议，并在客服点击确认后写入本地 `confirmed_app_prices` 作为后续对比基准。
-- `/quotes` 页面下方的 APP 建议报价只基于已保存的报价库，不包含尚未保存的解析结果。
-- 慢刷报价默认不参与 APP 后台建议价，只参与用户卡出货匹配。

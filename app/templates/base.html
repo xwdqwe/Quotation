@@ -3,17 +3,16 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Cardsabi 报价引擎{% endblock %}</title>
+    <title>{% block title %}Cardsabi 报价解析器{% endblock %}</title>
     <link rel="stylesheet" href="{{ request.app.url_path_for('static', path='styles.css') }}">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="{{ request.app.url_path_for('home') }}">Cardsabi 报价引擎</a>
+      <a class="brand" href="{{ request.app.url_path_for('home') }}">Cardsabi 报价解析器</a>
       <nav class="nav">
         <a href="{{ request.app.url_path_for('quote_page') }}">报价解析</a>
-        <a href="{{ request.app.url_path_for('match_page') }}">出货匹配</a>
-        <a href="{{ request.app.url_path_for('library_page') }}">报价库</a>
-        <a href="{{ request.app.url_path_for('app_categories_page') }}">分类库</a>
+        <a href="{{ request.app.url_path_for('history_page') }}">发送记录</a>
+        <a href="{{ request.app.url_path_for('settings_page') }}">接口设置</a>
         {% if auth_enabled %}
           <form method="post" action="{{ request.app.url_path_for('logout') }}" class="nav-logout">
             <span>{{ auth_username }}</span>

@@ -1,30 +1,32 @@
 {% extends "base.html" %}
-{% block title %}Cardsabi 报价引擎{% endblock %}
+{% block title %}Cardsabi 报价解析器{% endblock %}
 
 {% block content %}
 <section class="hero">
   <div>
-    <h1>Cardsabi 报价引擎</h1>
-    <p>内部报价录入、供应商报价维度比价和用户卡出货匹配工具。</p>
+    <h1>Cardsabi 报价解析器</h1>
+    <p>将微信群报价解析为标准字段，校正后直接发送到 Cardsabi 管理后台。</p>
   </div>
 </section>
 
 <section class="entry-grid">
   <a class="entry" href="{{ request.app.url_path_for('quote_page') }}">
-    <strong>群报价解析 / APP 建议报价</strong>
-    <span>粘贴微信群报价，人工校正后保存，并按供应商报价维度生成后台建议更新清单。</span>
+    <strong>解析并发送报价</strong>
+    <span>粘贴单个品牌报价，人工校正后全量替换该商家的该品牌报价。</span>
   </a>
-  <a class="entry" href="{{ request.app.url_path_for('match_page') }}">
-    <strong>用户卡出货匹配</strong>
-    <span>按品牌、地区和面额查询当前可用供应商报价，由高到低排序。</span>
+  <a class="entry" href="{{ request.app.url_path_for('history_page') }}">
+    <strong>发送记录</strong>
+    <span>查看最近 7 天的成功和失败记录，快速定位接口返回信息。</span>
   </a>
-  <a class="entry secondary" href="{{ request.app.url_path_for('library_page') }}">
-    <strong>供应商报价库</strong>
-    <span>按品牌、地区、类型、来源群和状态筛选查看报价。</span>
+  <a class="entry secondary" href="{{ request.app.url_path_for('settings_page') }}">
+    <strong>接口与映射设置</strong>
+    <span>同步 Cardsabi 商家、品牌和国家，并配置品牌卡速。</span>
   </a>
-  <a class="entry secondary" href="{{ request.app.url_path_for('app_categories_page') }}">
-    <strong>分类库</strong>
-    <span>备用维护页：仅保存后台分类名称，不参与当前 APP 建议报价计算。</span>
-  </a>
+</section>
+
+<section class="section-band">
+  <h2>同步状态</h2>
+  <p>商家 {{ catalog_status.merchant_count }} 个，品牌 {{ catalog_status.category_count }} 个，国家 {{ catalog_status.country_count }} 个。</p>
+  <p class="muted">最近同步：{{ catalog_status.synced_at or "尚未同步" }}</p>
 </section>
 {% endblock %}

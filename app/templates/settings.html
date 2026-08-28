@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}接口与映射设置{% endblock %}
+
+{% block content %}
+<section class="page-heading">
+  <div>
+    <h1>接口与映射设置</h1>
+    <p>先同步 Cardsabi 的商家、品牌和国家，再确认解析名称如何转换为接口字段。</p>
+  </div>
+  <a class="button ghost" href="{{ request.app.url_path_for('quote_page') }}">返回报价解析</a>
+</section>
+
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+
+<section class="section-band">
+  <div class="section-title-row">
+    <div>
+      <h2>Cardsabi 接口</h2>
+      <p>当前地址：<code>{{ api_settings.base_url }}</code></p>
+    </div>
+    <form method="post" action="{{ request.app.url_path_for('refresh_catalogs') }}">
+      <button type="submit">同步商家、品牌和国家</button>
+    </form>
+  </div>
+  <div class="status-grid">
+    <div><strong>{{ catalog_status.merchant_count }}</strong><span>商家</span></div>
+    <div><strong>{{ catalog_status.category_count }}</strong><span>Cardsabi 品牌</span></div>
+    <div><strong>{{ catalog_status.country_count }}</strong><span>国家简称</span></div>
+  </div>
+  <p class="muted">最近同步：{{ catalog_status.synced_at or "尚未同步" }}</p>
+  {% if not api_settings.configured %}
+  <div class="notice warning">请在服务器环境变量中配置 <code>CARDSABI_API_USERNAME</code> 和 <code>CARDSABI_API_PASSWORD</code>。</div>
+  {% endif %}
+  {% if not api_settings.is_secure %}
+  <div class="notice warning">当前为 HTTP 测试接口。生产切换前必须启用 HTTPS、服务端密钥或签名认证，并让 Cardsabi 将服务器 IP 加入白名单。</div>
+  {% endif %}
+</section>
+
+<form method="post" action="{{ request.app.url_path_for('save_mappings') }}" class="stack">
+  <section class="section-band">
+    <div class="section-title-row">
+      <div>
+        <h2>品牌与卡速</h2>
+        <p>卡速按品牌固定配置，只允许 <code>Fast</code> 或 <code>Slow</code>。</p>
+      </div>
+    </div>
+    <input type="hidden" name="brand_row_count" value="{{ brand_mappings|length }}">
+    <div class="mapping-list">
+      <div class="mapping-row mapping-head"><span>解析品牌</span><span>Cardsabi 品牌</span><span>卡速</span></div>
+      {% for row in brand_mappings %}
+      <div class="mapping-row">
+        <input type="hidden" name="parser_brand_{{ loop.index0 }}" value="{{ row.parser_brand }}">
+        <strong>{{ row.parser_brand }}</strong>
+        <select name="category_name_{{ loop.index0 }}">
+          <option value="">待映射</option>
+          {% for category in categories %}
+          <option value="{{ category }}" {% if row.category_name == category %}selected{% endif %}>{{ category }}</option>
+          {% endfor %}
+        </select>
+        <select name="card_speed_{{ loop.index0 }}">
+          <option value="">待配置</option>
+          <option value="Fast" {% if row.card_speed == "Fast" %}selected{% endif %}>快（Fast）</option>
+          <option value="Slow" {% if row.card_speed == "Slow" %}selected{% endif %}>慢（Slow）</option>
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="section-band">
+    <div class="section-title-row">
+      <div>
+        <h2>国家简称映射</h2>
+        <p>解析器保留地区/币种用于校正，发送时只提交 Cardsabi 国家简称。</p>
+      </div>
+    </div>
+    <input type="hidden" name="country_row_count" value="{{ country_mappings|length }}">
+    <div class="mapping-list country-mapping-list">
+      <div class="mapping-row mapping-head"><span>解析地区</span><span>Cardsabi 国家简称</span></div>
+      {% for row in country_mappings %}
+      <div class="mapping-row">
+        <input type="hidden" name="parser_country_{{ loop.index0 }}" value="{{ row.parser_country }}">
+        <strong>{{ row.parser_country }}</strong>
+        <select name="cardsabi_country_{{ loop.index0 }}">
+          <option value="">待映射</option>
+          {% for country in countries %}
+          <option value="{{ country }}" {% if row.cardsabi_country == country %}selected{% endif %}>{{ country }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="sticky-actions">
+    <button type="submit">保存全部映射</button>
+  </div>
+</form>
+{% endblock %}
