@@ -47,6 +47,14 @@ TWO_LINE_SAME_RATE_SAMPLE = """单独更新其他价格不变
 💰要求：来稳的老客户卡
 """
 
+APPLE_COUNTRY_TITLE_RATE_ON_DENOM_SAMPLE = """💰瑞典：图/密同价
+💰面值：200~4000：100 倍数 ：0.482
+💰面值：4000~5000：500 倍数 ：0.482
+💰挪威：图/密同价
+💰面值：200~5000：100倍数：0.488
+💰备注：以上200面值以下不加账
+"""
+
 RAZER_UNBOUNDED_SAMPLE = """==== 雷蛇 Razer ====
 美 USD =5.63 ↑↑
 新 SGD =4.18
@@ -539,6 +547,37 @@ def test_two_line_same_rate_sample() -> None:
         ("physical", "卡图"),
         ("code", "代码/卡密"),
     }
+
+
+def test_apple_country_title_with_rate_on_denom_lines() -> None:
+    rows = parse_quote_text(
+        "回归测试群",
+        APPLE_COUNTRY_TITLE_RATE_ON_DENOM_SAMPLE,
+        default_brand="Apple",
+    )
+
+    assert len(rows) == 6, len(rows)
+    sweden = [row for row in rows if row["country"] == "Sweden" and row["currency"] == "SEK"]
+    norway = [row for row in rows if row["country"] == "Norway" and row["currency"] == "NOK"]
+    assert len(sweden) == 4
+    assert len(norway) == 2
+    assert {
+        (row["denom_min"], row["denom_max"], row["multiplier"], row["supplier_rate"])
+        for row in sweden
+    } == {
+        (200.0, 4000.0, 100.0, Decimal("0.482")),
+        (4000.0, 5000.0, 500.0, Decimal("0.482")),
+    }
+    assert {
+        (row["denom_min"], row["denom_max"], row["multiplier"], row["supplier_rate"])
+        for row in norway
+    } == {(200.0, 5000.0, 100.0, Decimal("0.488"))}
+    for market_rows in (sweden, norway):
+        assert {(row["frontend_type"], row["subtype"]) for row in market_rows} == {
+            ("physical", "卡图"),
+            ("code", "代码/卡密"),
+        }
+        assert all("以上200面值以下不加账" in row["requirements"] for row in market_rows)
 
 
 def test_razer_steam_unbounded_same_rate() -> None:
@@ -1678,6 +1717,7 @@ def main() -> None:
     test_code_fixed_value_separator_variants()
     test_market_rate_parenthesized_range_sample()
     test_two_line_same_rate_sample()
+    test_apple_country_title_with_rate_on_denom_lines()
     test_razer_steam_unbounded_same_rate()
     test_itunes_electronic_card_aliases_and_context()
     test_card_secret_same_price_context()

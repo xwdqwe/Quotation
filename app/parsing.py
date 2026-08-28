@@ -837,6 +837,8 @@ def _parse_apple_quote_block(
     }
     block_requirements = ""
     block_title_markets: list[tuple[str, str]] = []
+    active_plain_title_markets: list[tuple[str, str]] = []
+    active_plain_title_subtypes: list[str] = []
 
     for item in block:
         title_context = _apple_bracket_title_context(item["line"])
@@ -850,7 +852,17 @@ def _parse_apple_quote_block(
 
         draft = _apple_price_draft(item)
         if draft:
+            if active_plain_title_markets and not draft["country_targets"]:
+                draft["country_targets"] = list(active_plain_title_markets)
+            if active_plain_title_subtypes and not draft["subtypes"]:
+                draft["subtypes"] = list(active_plain_title_subtypes)
             drafts.append(draft)
+            continue
+
+        plain_title_context = _apple_plain_title_context(item["line"])
+        if plain_title_context:
+            active_plain_title_markets = plain_title_context["markets"]
+            active_plain_title_subtypes = plain_title_context["subtypes"]
             continue
 
         constraint = _apple_constraint_from_line(item["line"])
@@ -966,6 +978,22 @@ def _apple_bracket_title_context(line: str) -> dict[str, Any] | None:
         "markets": markets,
         "requirements": _normalize_hash_requirements(match.group("suffix")),
     }
+
+
+def _apple_plain_title_context(line: str) -> dict[str, Any] | None:
+    roles = classify_numbers_in_line(line)
+    if (
+        roles["supplier_rate_candidates"]
+        or roles["ranges"]
+        or roles["open_ranges"]
+        or roles["fixed_denom"] is not None
+    ):
+        return None
+    markets = _apple_country_targets(line)
+    subtypes = _apple_explicit_subtypes(line)
+    if not markets or not subtypes:
+        return None
+    return {"markets": markets, "subtypes": subtypes}
 
 
 def _is_apple_bracket_market_subtype_quote(line: str) -> bool:
