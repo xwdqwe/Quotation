@@ -19,6 +19,9 @@
 {% if not api_configured %}
 <div class="notice error">Cardsabi 接口账号尚未配置，目前可以解析，但不能发送。</div>
 {% endif %}
+{% if catalog_refresh_error %}
+<div class="notice error">Cardsabi 实时目录刷新失败：{{ catalog_refresh_error }}。当前页面可能显示旧目录，发送时会再次实时校验并在失败时停止发送。</div>
+{% endif %}
 {% if not merchant_options %}
 <div class="notice warning">尚未同步 Cardsabi 商家、品牌和国家，请先前往“接口设置”同步。</div>
 {% endif %}

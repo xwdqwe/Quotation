@@ -183,6 +183,15 @@ def test_history_retention() -> None:
 
 def test_failed_api_call_is_persisted() -> None:
     class FailingClient:
+        def query_merchants(self):
+            return [{"merchantNumber": "M10001", "name": "测试商家"}]
+
+        def query_categories(self):
+            return ["iTunes"]
+
+        def query_countries(self):
+            return ["US"]
+
         def submit_quotes(self, payload):
             raise CardsabiClientError("测试连接失败")
 
@@ -240,6 +249,125 @@ def test_failed_api_call_is_persisted() -> None:
             assert history[0]["operator"] == "测试客服"
 
 
+def test_send_refreshes_live_catalogs_before_submit() -> None:
+    class FreshCatalogClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.submitted_payload = None
+
+        def query_merchants(self):
+            self.calls.append("merchants")
+            return [{"merchantNumber": "M10001", "name": "实时商家名称"}]
+
+        def query_categories(self):
+            self.calls.append("categories")
+            return ["iTunes"]
+
+        def query_countries(self):
+            self.calls.append("countries")
+            return ["US"]
+
+        def submit_quotes(self, payload):
+            self.calls.append("submit")
+            self.submitted_payload = payload
+            return {"code": "00000", "message": "成功"}
+
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "sync.sqlite3"
+        with closing(get_connection(db_path)) as conn, conn:
+            create_tables(conn)
+            init_sync_tables(conn)
+            conn.execute(
+                "INSERT INTO cardsabi_merchants VALUES (?, ?, ?)",
+                ("M10001", "过期商家名称", "2026-01-01 00:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO cardsabi_categories VALUES (?, ?)",
+                ("已删除品牌", "2026-01-01 00:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO cardsabi_countries VALUES (?, ?)",
+                ("已删除国家", "2026-01-01 00:00:00"),
+            )
+            conn.execute(
+                "UPDATE cardsabi_brand_mappings SET category_name = '已删除品牌', card_speed = 'Fast' "
+                "WHERE parser_brand = 'Apple'"
+            )
+            conn.execute(
+                "UPDATE cardsabi_country_mappings SET cardsabi_country = '已删除国家' "
+                "WHERE parser_country = 'US'"
+            )
+
+        client = FreshCatalogClient()
+        original_get_connection = main_module.get_connection
+        original_client = main_module.CardsabiClient
+        main_module.get_connection = lambda: get_connection(db_path)
+        main_module.CardsabiClient = lambda: client
+        try:
+            result = main_module.send_quotes_json(
+                QuoteSyncPayload(
+                    merchant_number="M10001",
+                    operator="测试客服",
+                    source_text="Apple US 50=5.4",
+                    rows=[QuoteRowPayload(**row())],
+                )
+            )
+        finally:
+            main_module.get_connection = original_get_connection
+            main_module.CardsabiClient = original_client
+
+        assert result["ok"] is True
+        assert client.calls == ["merchants", "categories", "countries", "submit"]
+        merchant_payload = client.submitted_payload["merchantQuoteList"][0]
+        quote_payload = merchant_payload["quoteList"][0]
+        assert merchant_payload["merchantName"] == "实时商家名称"
+        assert quote_payload["categoryName"] == "iTunes"
+        assert quote_payload["country"] == "US"
+
+
+def test_send_stops_when_live_catalog_refresh_fails() -> None:
+    class UnavailableCatalogClient:
+        submitted = False
+
+        def query_merchants(self):
+            raise CardsabiClientError("实时商家目录不可用")
+
+        def submit_quotes(self, payload):
+            self.submitted = True
+            return {"code": "00000", "message": "不应发送"}
+
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "sync.sqlite3"
+        with closing(get_connection(db_path)) as conn, conn:
+            create_tables(conn)
+            init_sync_tables(conn)
+
+        client = UnavailableCatalogClient()
+        original_get_connection = main_module.get_connection
+        original_client = main_module.CardsabiClient
+        main_module.get_connection = lambda: get_connection(db_path)
+        main_module.CardsabiClient = lambda: client
+        try:
+            try:
+                main_module.send_quotes_json(
+                    QuoteSyncPayload(
+                        merchant_number="M10001",
+                        source_text="Apple US 50=5.4",
+                        rows=[QuoteRowPayload(**row())],
+                    )
+                )
+            except HTTPException as exc:
+                assert exc.status_code == 502
+                assert "实时目录" in str(exc.detail)
+            else:
+                raise AssertionError("实时目录刷新失败时必须停止发送")
+        finally:
+            main_module.get_connection = original_get_connection
+            main_module.CardsabiClient = original_client
+
+        assert client.submitted is False
+
+
 def main() -> None:
     test_single_brand_and_card_types()
     test_multiple_brands_rejected()
@@ -251,6 +379,8 @@ def main() -> None:
     test_price_precision_and_remark_limit()
     test_history_retention()
     test_failed_api_call_is_persisted()
+    test_send_refreshes_live_catalogs_before_submit()
+    test_send_stops_when_live_catalog_refresh_fails()
     print("Cardsabi 同步回归通过：单品牌、卡类型、范围、合并、精度、备注和7天记录")
 
 

@@ -111,6 +111,31 @@ def replace_catalogs(
         conn.execute("INSERT INTO cardsabi_categories VALUES (?, ?)", (category, timestamp))
     for country in _clean_strings(countries):
         conn.execute("INSERT INTO cardsabi_countries VALUES (?, ?)", (country, timestamp))
+
+    conn.execute(
+        """
+        UPDATE cardsabi_brand_mappings
+        SET category_name = NULL, updated_at = ?
+        WHERE category_name IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM cardsabi_categories c
+              WHERE c.category_name = cardsabi_brand_mappings.category_name
+          )
+        """,
+        (timestamp,),
+    )
+    conn.execute(
+        """
+        UPDATE cardsabi_country_mappings
+        SET cardsabi_country = NULL, updated_at = ?
+        WHERE cardsabi_country IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM cardsabi_countries c
+              WHERE c.country_name = cardsabi_country_mappings.cardsabi_country
+          )
+        """,
+        (timestamp,),
+    )
     ensure_mapping_rows(conn)
 
 

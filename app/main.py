@@ -289,7 +289,20 @@ async def parse_quotes(request: Request):
 def send_quotes_json(payload: QuoteSyncPayload):
     merchant_number = payload.merchant_number.strip()
     rows = [_row_dict(row) for row in payload.rows]
+    client = CardsabiClient()
     with closing(get_connection()) as conn, conn:
+        try:
+            _refresh_cardsabi_catalogs(conn, client)
+            conn.commit()
+        except (CardsabiClientError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": f"Cardsabi 实时目录刷新失败，已停止发送：{exc}。"
+                    "请检查接口连接后重试，系统不会使用旧缓存继续发送。"
+                },
+            ) from exc
+
         merchant = get_merchant(conn, merchant_number)
         try:
             prepared = prepare_sync_payload(
@@ -302,7 +315,7 @@ def send_quotes_json(payload: QuoteSyncPayload):
             raise HTTPException(status_code=400, detail=exc.errors) from exc
 
         try:
-            response = CardsabiClient().submit_quotes(prepared.payload)
+            response = client.submit_quotes(prepared.payload)
         except CardsabiClientError as exc:
             history_id = record_sync_history(
                 conn,
@@ -379,11 +392,8 @@ def settings_page(request: Request, message: str = "", error: str = ""):
 def refresh_catalogs():
     try:
         client = CardsabiClient()
-        merchants = client.query_merchants()
-        categories = client.query_categories()
-        countries = client.query_countries()
         with closing(get_connection()) as conn, conn:
-            replace_catalogs(conn, merchants, categories, countries)
+            merchants, categories, countries = _refresh_cardsabi_catalogs(conn, client)
         message = f"已同步 {len(merchants)} 个商家、{len(categories)} 个品牌、{len(countries)} 个国家。"
         return RedirectResponse(f"/settings?message={url_quote(message)}", status_code=303)
     except (CardsabiClientError, ValueError) as exc:
@@ -431,15 +441,31 @@ def retired_page():
     return RedirectResponse("/quotes", status_code=303)
 
 
-def _quote_context(conn: Any) -> dict[str, Any]:
+def _quote_context(conn: Any, *, refresh_live: bool = True) -> dict[str, Any]:
+    catalog_refresh_error = ""
+    settings = get_cardsabi_settings()
+    if refresh_live and settings.configured:
+        try:
+            _refresh_cardsabi_catalogs(conn, CardsabiClient(settings))
+        except (CardsabiClientError, ValueError) as exc:
+            catalog_refresh_error = str(exc)
     return {
         "brand_options": list_active_brands(conn),
         "market_options": list_active_markets(conn),
         "merchant_options": list_merchants(conn),
         "brand_mappings": brand_mapping_dict(conn),
         "catalog_status": catalog_status(conn),
-        "api_configured": get_cardsabi_settings().configured,
+        "api_configured": settings.configured,
+        "catalog_refresh_error": catalog_refresh_error,
     }
+
+
+def _refresh_cardsabi_catalogs(conn: Any, client: CardsabiClient) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    merchants = client.query_merchants()
+    categories = client.query_categories()
+    countries = client.query_countries()
+    replace_catalogs(conn, merchants, categories, countries)
+    return merchants, categories, countries
 
 
 def _row_dict(row: QuoteRowPayload) -> dict[str, Any]:
