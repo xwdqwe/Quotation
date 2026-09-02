@@ -58,6 +58,12 @@ def init_sync_tables(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS cardsabi_category_settings (
+            category_name TEXT PRIMARY KEY,
+            card_speed TEXT,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS cardsabi_country_mappings (
             parser_country TEXT PRIMARY KEY,
             cardsabi_country TEXT,
@@ -86,6 +92,7 @@ def init_sync_tables(conn: sqlite3.Connection) -> None:
     )
     _ensure_sync_history_columns(conn)
     ensure_mapping_rows(conn)
+    ensure_category_settings(conn)
 
 
 def replace_catalogs(
@@ -137,6 +144,7 @@ def replace_catalogs(
         (timestamp,),
     )
     ensure_mapping_rows(conn)
+    ensure_category_settings(conn)
 
 
 def ensure_mapping_rows(conn: sqlite3.Connection) -> None:
@@ -194,6 +202,40 @@ def ensure_mapping_rows(conn: sqlite3.Connection) -> None:
         )
 
 
+def ensure_category_settings(conn: sqlite3.Connection) -> None:
+    timestamp = now_iso()
+    conn.execute(
+        """
+        INSERT INTO cardsabi_category_settings (category_name, card_speed, updated_at)
+        SELECT category_name, NULL, ? FROM cardsabi_categories WHERE 1
+        ON CONFLICT(category_name) DO NOTHING
+        """,
+        (timestamp,),
+    )
+    conn.execute(
+        """
+        UPDATE cardsabi_category_settings
+        SET card_speed = (
+                SELECT m.card_speed
+                FROM cardsabi_brand_mappings m
+                WHERE m.category_name = cardsabi_category_settings.category_name
+                  AND m.card_speed IN ('Fast', 'Slow')
+                ORDER BY m.parser_brand
+                LIMIT 1
+            ),
+            updated_at = ?
+        WHERE card_speed IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM cardsabi_brand_mappings m
+              WHERE m.category_name = cardsabi_category_settings.category_name
+                AND m.card_speed IN ('Fast', 'Slow')
+          )
+        """,
+        (timestamp,),
+    )
+
+
 def list_merchants(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -213,6 +255,47 @@ def get_merchant(conn: sqlite3.Connection, merchant_number: str) -> dict[str, An
 
 def list_categories(conn: sqlite3.Connection) -> list[str]:
     return [row["category_name"] for row in conn.execute("SELECT category_name FROM cardsabi_categories ORDER BY category_name")]
+
+
+def list_category_settings(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    ensure_category_settings(conn)
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT c.category_name, s.card_speed, s.updated_at
+            FROM cardsabi_categories c
+            LEFT JOIN cardsabi_category_settings s ON s.category_name = c.category_name
+            ORDER BY c.category_name
+            """
+        ).fetchall()
+    ]
+
+
+def category_setting_dict(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    return {row["category_name"]: row for row in list_category_settings(conn)}
+
+
+def save_category_settings(conn: sqlite3.Connection, rows: list[dict[str, str]]) -> None:
+    allowed_categories = set(list_categories(conn))
+    timestamp = now_iso()
+    for row in rows:
+        category_name = row.get("category_name", "").strip()
+        card_speed = row.get("card_speed", "").strip() or None
+        if category_name not in allowed_categories:
+            raise ValueError(f"Cardsabi 品牌不存在：{category_name or '空白'}")
+        if card_speed and card_speed not in {"Fast", "Slow"}:
+            raise ValueError(f"卡速无效：{card_speed}")
+        conn.execute(
+            """
+            INSERT INTO cardsabi_category_settings (category_name, card_speed, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(category_name) DO UPDATE SET
+                card_speed = excluded.card_speed,
+                updated_at = excluded.updated_at
+            """,
+            (category_name, card_speed, timestamp),
+        )
 
 
 def list_countries(conn: sqlite3.Connection) -> list[str]:

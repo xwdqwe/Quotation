@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import os
+import re
 from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
@@ -24,13 +25,14 @@ from .auth import (
     verify_password,
 )
 from .cardsabi_client import CardsabiClient, CardsabiClientError, get_cardsabi_settings
-from .database import get_connection, init_db, list_active_brands, list_active_markets
+from .database import get_connection, init_db, list_active_markets
 from .money import decimal_text
 from .parsing import method_label, parse_quote_text, status_label, subtype_options
 from .quote_sync import QuoteSyncValidationError, prepare_sync_payload
 from .standards import market_label, market_value, split_market_value
 from .sync_store import (
     brand_mapping_dict,
+    category_setting_dict,
     catalog_status,
     cleanup_sync_history,
     country_mapping_dict,
@@ -38,12 +40,14 @@ from .sync_store import (
     init_sync_tables,
     list_brand_mappings,
     list_categories,
+    list_category_settings,
     list_countries,
     list_country_mappings,
     list_merchants,
     list_sync_history,
     record_sync_history,
     replace_catalogs,
+    save_category_settings,
     save_brand_mappings,
     save_country_mappings,
 )
@@ -248,19 +252,26 @@ async def parse_quotes(request: Request):
     default_multiplier = _to_float(default_multiplier_raw)
     default_subtype = str(form.get("default_subtype", "")).strip()
     ignored_items: list[str] = []
+    with closing(get_connection()) as conn, conn:
+        context = _quote_context(conn)
+    categories = [item["name"] for item in context["brand_options"]]
+    effective_default_brand = default_brand or _detect_official_category(source_text, categories)
     parsed_rows = parse_quote_text(
         merchant_number,
         source_text,
         24,
-        default_brand=default_brand,
+        default_brand=effective_default_brand,
         default_market=default_market,
         default_processing_method=default_processing_method,
         default_multiplier=default_multiplier,
         default_subtype=default_subtype,
         ignored_items=ignored_items,
     )
-    with closing(get_connection()) as conn, conn:
-        context = _quote_context(conn)
+    _resolve_parsed_categories(
+        parsed_rows,
+        categories=categories,
+        brand_mappings=context["brand_mappings"],
+    )
     return render(
         request,
         "quotes.html",
@@ -308,7 +319,7 @@ def send_quotes_json(payload: QuoteSyncPayload):
             prepared = prepare_sync_payload(
                 merchant=merchant or {},
                 rows=rows,
-                brand_mappings=brand_mapping_dict(conn),
+                category_settings=category_setting_dict(conn),
                 country_mappings=country_mapping_dict(conn),
             )
         except QuoteSyncValidationError as exc:
@@ -375,11 +386,17 @@ def send_quotes_json(payload: QuoteSyncPayload):
 def settings_page(request: Request, message: str = "", error: str = ""):
     settings = get_cardsabi_settings()
     with closing(get_connection()) as conn, conn:
+        if settings.configured:
+            try:
+                _refresh_cardsabi_catalogs(conn, CardsabiClient(settings))
+            except (CardsabiClientError, ValueError) as exc:
+                error = error or f"Cardsabi 实时目录刷新失败：{exc}"
         context = {
             "api_settings": settings,
             "catalog_status": catalog_status(conn),
             "categories": list_categories(conn),
             "countries": list_countries(conn),
+            "category_settings": list_category_settings(conn),
             "brand_mappings": list_brand_mappings(conn),
             "country_mappings": list_country_mappings(conn),
             "message": message,
@@ -403,11 +420,17 @@ def refresh_catalogs():
 @app.post("/settings/save-mappings")
 async def save_mappings(request: Request):
     form = await _read_large_form(request)
+    category_rows = [
+        {
+            "category_name": str(form.get(f"official_category_name_{index}", "")),
+            "card_speed": str(form.get(f"official_card_speed_{index}", "")),
+        }
+        for index in range(_to_int(form.get("category_row_count"), 0))
+    ]
     brand_rows = [
         {
             "parser_brand": str(form.get(f"parser_brand_{index}", "")),
             "category_name": str(form.get(f"category_name_{index}", "")),
-            "card_speed": str(form.get(f"card_speed_{index}", "")),
         }
         for index in range(_to_int(form.get("brand_row_count"), 0))
     ]
@@ -420,6 +443,7 @@ async def save_mappings(request: Request):
     ]
     try:
         with closing(get_connection()) as conn, conn:
+            save_category_settings(conn, category_rows)
             save_brand_mappings(conn, brand_rows)
             save_country_mappings(conn, country_rows)
     except ValueError as exc:
@@ -450,7 +474,7 @@ def _quote_context(conn: Any, *, refresh_live: bool = True) -> dict[str, Any]:
         except (CardsabiClientError, ValueError) as exc:
             catalog_refresh_error = str(exc)
     return {
-        "brand_options": list_active_brands(conn),
+        "brand_options": [{"name": category} for category in list_categories(conn)],
         "market_options": list_active_markets(conn),
         "merchant_options": list_merchants(conn),
         "brand_mappings": brand_mapping_dict(conn),
@@ -458,6 +482,35 @@ def _quote_context(conn: Any, *, refresh_live: bool = True) -> dict[str, Any]:
         "api_configured": settings.configured,
         "catalog_refresh_error": catalog_refresh_error,
     }
+
+
+def _resolve_parsed_categories(
+    rows: list[dict[str, Any]],
+    *,
+    categories: list[str],
+    brand_mappings: dict[str, dict[str, Any]],
+) -> None:
+    category_lookup = {category.casefold(): category for category in categories}
+    for row in rows:
+        parsed_brand = str(row.get("brand") or "").strip()
+        mapping = brand_mappings.get(parsed_brand) or {}
+        mapped_category = str(mapping.get("category_name") or "").strip()
+        category_name = category_lookup.get(mapped_category.casefold()) if mapped_category else None
+        if not category_name:
+            category_name = category_lookup.get(parsed_brand.casefold())
+        if category_name and category_name != parsed_brand:
+            note = str(row.get("parse_note") or "").strip()
+            row["parse_note"] = "；".join(item for item in [note, f"解析品牌 {parsed_brand} 映射为 {category_name}"] if item)
+        row["brand"] = category_name or ""
+
+
+def _detect_official_category(source_text: str, categories: list[str]) -> str:
+    matches: list[str] = []
+    for category in sorted(categories, key=len, reverse=True):
+        pattern = re.escape(category).replace(r"\ ", r"\s+")
+        if re.search(rf"(?<![\w]){pattern}(?![\w])", source_text, re.IGNORECASE):
+            matches.append(category)
+    return matches[0] if len(matches) == 1 else ""
 
 
 def _refresh_cardsabi_catalogs(conn: Any, client: CardsabiClient) -> tuple[list[dict[str, Any]], list[str], list[str]]:

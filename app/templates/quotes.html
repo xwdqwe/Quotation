@@ -97,7 +97,7 @@
   <div class="section-title-row">
     <div>
       <h2>解析结果</h2>
-      <p>本次解析出 <strong>{{ parsed_rows|length }}</strong> 条。发送时会再次校验单品牌、Cardsabi 映射、面额和备注长度。</p>
+      <p>本次解析出 <strong>{{ parsed_rows|length }}</strong> 条。品牌选项实时来自 Cardsabi，发送时会再次校验品牌、卡速、面额和备注长度。</p>
     </div>
     <button type="button" id="send-button" data-url="{{ request.app.url_path_for('send_quotes_json') }}">发送到 Cardsabi</button>
   </div>
@@ -108,7 +108,6 @@
 
   <div class="quote-list" id="quote-list">
     {% for row in parsed_rows %}
-    {% set mapping = brand_mappings.get(row.brand, {}) %}
     {% set row_subtype = row.raw_card_subtype or row.subtype %}
     {% set selected_card_type = "ECode" if "电子" in row_subtype else ("Code" if row.frontend_type == "code" else "Physical") %}
     <article class="quote-editor" data-row>

@@ -18,15 +18,18 @@ from app.database import create_tables, get_connection  # noqa: E402
 from app.main import QuoteRowPayload, QuoteSyncPayload  # noqa: E402
 from app.quote_sync import QuoteSyncValidationError, prepare_sync_payload  # noqa: E402
 from app.sync_store import (  # noqa: E402
+    category_setting_dict,
     cleanup_sync_history,
     init_sync_tables,
     record_sync_history,
+    replace_catalogs,
+    save_category_settings,
 )
 
 
 MERCHANT = {"merchant_number": "M10001", "merchant_name": "测试商家"}
-BRAND_MAPPINGS = {
-    "Apple": {"category_name": "iTunes", "card_speed": "Fast"},
+CATEGORY_SETTINGS = {
+    "Apple(itunes)": {"category_name": "Apple(itunes)", "card_speed": "Fast"},
     "Paysafecard": {"category_name": "Paysafecard", "card_speed": "Slow"},
 }
 COUNTRY_MAPPINGS = {"US": "US", "Poland": "PL"}
@@ -36,7 +39,7 @@ def row(**overrides):
     value = {
         "line_no": 1,
         "source_line": "Apple US 横卡 50=5.50",
-        "brand": "Apple",
+        "brand": "Apple(itunes)",
         "country": "US",
         "frontend_type": "physical",
         "raw_card_subtype": "横卡",
@@ -59,7 +62,7 @@ def prepare(rows):
     return prepare_sync_payload(
         merchant=MERCHANT,
         rows=rows,
-        brand_mappings=BRAND_MAPPINGS,
+        category_settings=CATEGORY_SETTINGS,
         country_mappings=COUNTRY_MAPPINGS,
     )
 
@@ -74,7 +77,7 @@ def test_single_brand_and_card_types() -> None:
     )
     quotes = prepared.payload["merchantQuoteList"][0]["quoteList"]
     assert {item["cardType"] for item in quotes} == {"Physical", "Code", "ECode"}
-    assert all(item["categoryName"] == "iTunes" for item in quotes)
+    assert all(item["categoryName"] == "Apple(itunes)" for item in quotes)
     assert all(item["cardSpeed"] == "Fast" for item in quotes)
     assert all(item["merchantRemark"] for item in quotes)
 
@@ -231,7 +234,7 @@ def test_failed_api_call_is_persisted() -> None:
                         merchant_number="M10001",
                         operator="测试客服",
                         source_text="Apple US 50=5.4",
-                        rows=[QuoteRowPayload(**row())],
+                        rows=[QuoteRowPayload(**row(brand="iTunes"))],
                     )
                 )
             except HTTPException as exc:
@@ -309,7 +312,7 @@ def test_send_refreshes_live_catalogs_before_submit() -> None:
                     merchant_number="M10001",
                     operator="测试客服",
                     source_text="Apple US 50=5.4",
-                    rows=[QuoteRowPayload(**row())],
+                    rows=[QuoteRowPayload(**row(brand="iTunes"))],
                 )
             )
         finally:
@@ -368,6 +371,69 @@ def test_send_stops_when_live_catalog_refresh_fails() -> None:
         assert client.submitted is False
 
 
+def test_quote_brand_options_use_live_cardsabi_categories() -> None:
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "sync.sqlite3"
+        with closing(get_connection(db_path)) as conn, conn:
+            create_tables(conn)
+            init_sync_tables(conn)
+            replace_catalogs(
+                conn,
+                [{"merchantNumber": "M10001", "name": "测试商家"}],
+                ["eBay", "New Brand"],
+                ["US"],
+            )
+            context = main_module._quote_context(conn, refresh_live=False)
+
+            save_category_settings(
+                conn,
+                [
+                    {"category_name": "eBay", "card_speed": "Fast"},
+                    {"category_name": "New Brand", "card_speed": "Slow"},
+                ],
+            )
+            settings = category_setting_dict(conn)
+
+        assert {item["name"] for item in context["brand_options"]} == {"eBay", "New Brand"}
+        assert len(context["brand_options"]) == 2
+
+        prepared = prepare_sync_payload(
+            merchant=MERCHANT,
+            rows=[row(brand="eBay")],
+            category_settings=settings,
+            country_mappings=COUNTRY_MAPPINGS,
+        )
+        quote = prepared.payload["merchantQuoteList"][0]["quoteList"][0]
+        assert quote["categoryName"] == "eBay"
+        assert quote["cardSpeed"] == "Fast"
+
+        parsed_rows = [{"brand": "Apple", "parse_note": ""}]
+        main_module._resolve_parsed_categories(
+            parsed_rows,
+            categories=["Apple(itunes)", "eBay"],
+            brand_mappings={"Apple": {"category_name": "Apple(itunes)"}},
+        )
+        assert parsed_rows[0]["brand"] == "Apple(itunes)"
+        assert main_module._detect_official_category("==== eBay ====", ["Apple(itunes)", "eBay"]) == "eBay"
+
+        detected_brand = main_module._detect_official_category(
+            "==== eBay ====\nUS 10-100=5.0",
+            ["Apple(itunes)", "eBay"],
+        )
+        dynamic_rows = main_module.parse_quote_text(
+            "测试商家",
+            "==== eBay ====\nUS 10-100=5.0",
+            default_brand=detected_brand,
+        )
+        main_module._resolve_parsed_categories(
+            dynamic_rows,
+            categories=["Apple(itunes)", "eBay"],
+            brand_mappings={"Apple": {"category_name": "Apple(itunes)"}},
+        )
+        assert dynamic_rows
+        assert {item["brand"] for item in dynamic_rows} == {"eBay"}
+
+
 def main() -> None:
     test_single_brand_and_card_types()
     test_multiple_brands_rejected()
@@ -381,6 +447,7 @@ def main() -> None:
     test_failed_api_call_is_persisted()
     test_send_refreshes_live_catalogs_before_submit()
     test_send_stops_when_live_catalog_refresh_fails()
+    test_quote_brand_options_use_live_cardsabi_categories()
     print("Cardsabi 同步回归通过：单品牌、卡类型、范围、合并、精度、备注和7天记录")
 
 

@@ -41,13 +41,37 @@
   <section class="section-band">
     <div class="section-title-row">
       <div>
-        <h2>品牌与卡速</h2>
-        <p>卡速按品牌固定配置，只允许 <code>Fast</code> 或 <code>Slow</code>。</p>
+        <h2>Cardsabi 官方品牌与卡速</h2>
+        <p>品牌实时来自 Cardsabi。卡速按官方品牌配置，只允许 <code>Fast</code> 或 <code>Slow</code>。</p>
+      </div>
+    </div>
+    <input type="hidden" name="category_row_count" value="{{ category_settings|length }}">
+    <div class="mapping-list country-mapping-list">
+      <div class="mapping-row mapping-head"><span>Cardsabi 官方品牌</span><span>卡速</span></div>
+      {% for row in category_settings %}
+      <div class="mapping-row">
+        <input type="hidden" name="official_category_name_{{ loop.index0 }}" value="{{ row.category_name }}">
+        <strong>{{ row.category_name }}</strong>
+        <select name="official_card_speed_{{ loop.index0 }}">
+          <option value="">待配置</option>
+          <option value="Fast" {% if row.card_speed == "Fast" %}selected{% endif %}>快（Fast）</option>
+          <option value="Slow" {% if row.card_speed == "Slow" %}selected{% endif %}>慢（Slow）</option>
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="section-band">
+    <div class="section-title-row">
+      <div>
+        <h2>解析别名映射</h2>
+        <p>这里只负责把微信群中的苹果、iTunes、PSN 等解析名称转换为实时 Cardsabi 官方品牌。</p>
       </div>
     </div>
     <input type="hidden" name="brand_row_count" value="{{ brand_mappings|length }}">
-    <div class="mapping-list">
-      <div class="mapping-row mapping-head"><span>解析品牌</span><span>Cardsabi 品牌</span><span>卡速</span></div>
+    <div class="mapping-list country-mapping-list">
+      <div class="mapping-row mapping-head"><span>解析名称</span><span>Cardsabi 官方品牌</span></div>
       {% for row in brand_mappings %}
       <div class="mapping-row">
         <input type="hidden" name="parser_brand_{{ loop.index0 }}" value="{{ row.parser_brand }}">
@@ -57,11 +81,6 @@
           {% for category in categories %}
           <option value="{{ category }}" {% if row.category_name == category %}selected{% endif %}>{{ category }}</option>
           {% endfor %}
-        </select>
-        <select name="card_speed_{{ loop.index0 }}">
-          <option value="">待配置</option>
-          <option value="Fast" {% if row.card_speed == "Fast" %}selected{% endif %}>快（Fast）</option>
-          <option value="Slow" {% if row.card_speed == "Slow" %}selected{% endif %}>慢（Slow）</option>
         </select>
       </div>
       {% endfor %}

@@ -59,10 +59,10 @@ def test_quotes_parse_route() -> None:
     main_module.render = lambda request, template, context: context
     main_module.get_connection = FakeConnection
     main_module._quote_context = lambda conn: {
-        "brand_options": [],
+        "brand_options": [{"name": "Apple(itunes)"}],
         "market_options": [],
         "merchant_options": [],
-        "brand_mappings": {},
+        "brand_mappings": {"Apple": {"category_name": "Apple(itunes)"}},
         "catalog_status": {},
         "api_configured": False,
     }
@@ -77,7 +77,7 @@ def test_quotes_parse_route() -> None:
     assert len(rows) == 6, len(rows)
     assert not any(row["source_line"] == "苹果卡：卡图" for row in rows)
     assert not any(row["source_line"] == "香港批量卡问~" for row in rows)
-    assert all(row["brand"] == "Apple" for row in rows)
+    assert all(row["brand"] == "Apple(itunes)" for row in rows)
     assert all(row["frontend_type"] == "physical" for row in rows)
     assert all(row["subtype"] == "卡图" for row in rows)
     assert all(row["processing_method"] == "fast_card" for row in rows)

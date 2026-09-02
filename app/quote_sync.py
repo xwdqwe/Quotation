@@ -35,7 +35,7 @@ def prepare_sync_payload(
     *,
     merchant: dict[str, Any],
     rows: list[dict[str, Any]],
-    brand_mappings: dict[str, dict[str, Any]],
+    category_settings: dict[str, dict[str, Any]],
     country_mappings: dict[str, str],
 ) -> PreparedSync:
     source_rows = [row for row in rows if not row.get("deleted")]
@@ -62,21 +62,20 @@ def prepare_sync_payload(
     if errors:
         raise QuoteSyncValidationError(errors)
 
-    parser_brand = next(iter(brands))
-    brand_mapping = brand_mappings.get(parser_brand) or {}
-    category_name = str(brand_mapping.get("category_name") or "").strip()
-    card_speed = str(brand_mapping.get("card_speed") or "").strip()
-    if not category_name:
-        errors.append(f"品牌 {parser_brand} 尚未映射到 Cardsabi 品牌。")
+    category_name = next(iter(brands))
+    category_setting = category_settings.get(category_name) or {}
+    card_speed = str(category_setting.get("card_speed") or "").strip()
+    if category_name not in category_settings:
+        errors.append(f"Cardsabi 品牌 {category_name} 已不存在或已停用。")
     if card_speed not in {"Fast", "Slow"}:
-        errors.append(f"品牌 {parser_brand} 尚未配置卡速 Fast/Slow。")
+        errors.append(f"Cardsabi 品牌 {category_name} 尚未配置卡速 Fast/Slow。")
 
     candidates: list[dict[str, Any]] = []
     for index, row in enumerate(source_rows, start=1):
         line_label = f"第{row.get('line_no') or index}行"
         row_brand = str(row.get("brand") or "").strip()
-        if row_brand != parser_brand:
-            errors.append(f"{line_label}品牌与本批品牌 {parser_brand} 不一致。")
+        if row_brand != category_name:
+            errors.append(f"{line_label}品牌与本批品牌 {category_name} 不一致。")
             continue
         status = str(row.get("status") or "active").strip()
         if status not in SENDABLE_STATUSES:
