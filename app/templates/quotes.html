@@ -99,7 +99,9 @@
       <h2>解析结果</h2>
       <p>本次解析出 <strong>{{ parsed_rows|length }}</strong> 条。品牌选项实时来自 Cardsabi，发送时会再次校验品牌、卡速、面额和备注长度。</p>
     </div>
-    <button type="button" id="send-button" data-url="{{ request.app.url_path_for('send_quotes_json') }}">发送到 Cardsabi</button>
+    <button type="button" id="send-button"
+            data-url="{{ request.app.url_path_for('send_quotes_json') }}"
+            data-bin-url="{{ request.app.url_path_for('quote_bin_options') }}">发送到 Cardsabi</button>
   </div>
   {% if parsed_rows|length > 100 %}
   <div class="notice warning">报价较多，建议发送前重点检查异常项和低置信度项。</div>
@@ -146,7 +148,9 @@
           </select>
         </label>
         <label>BIN
-          <input data-field="bin" value="" placeholder="无则留空">
+          <select data-field="bin" data-selected-bin="{{ row.get('bin', '') }}" disabled>
+            <option value="">正在加载 BIN...</option>
+          </select>
         </label>
         <label>倍数
           <input data-field="multiplier" inputmode="numeric" value="{{ row.multiplier|fmt if row.multiplier is not none else '' }}">
@@ -254,6 +258,73 @@
     message.textContent = text;
     message.scrollIntoView({ behavior: "smooth", block: "center" });
   }
+
+  function setBinOptions(row, bins, selectedBin = "") {
+    const select = row.querySelector('[data-field="bin"]');
+    select.replaceChildren();
+    select.add(new Option(bins.length ? "无 BIN（发送时不传）" : "该品牌无 BIN", ""));
+    bins.forEach((bin) => select.add(new Option(bin, bin)));
+    if (selectedBin && !bins.includes(selectedBin)) {
+      select.add(new Option(`${selectedBin}（已失效，请重新选择）`, selectedBin));
+    }
+    select.value = selectedBin;
+    select.disabled = false;
+  }
+
+  async function loadBins(categoryName, rows, preserveSelection = true) {
+    const activeRows = rows.filter((row) => value(row, "brand") === categoryName);
+    if (!categoryName || !activeRows.length) {
+      rows.forEach((row) => setBinOptions(row, [], ""));
+      return;
+    }
+    activeRows.forEach((row) => {
+      const select = row.querySelector('[data-field="bin"]');
+      select.disabled = true;
+      select.replaceChildren(new Option("正在实时加载 BIN...", ""));
+    });
+    try {
+      const response = await fetch(sendButton.dataset.binUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category_name: categoryName })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail?.message || data.detail || "BIN 查询失败");
+      }
+      activeRows.forEach((row) => {
+        if (value(row, "brand") !== categoryName) return;
+        const select = row.querySelector('[data-field="bin"]');
+        const selected = preserveSelection ? (select.dataset.selectedBin || "") : "";
+        select.dataset.selectedBin = selected;
+        setBinOptions(row, data.bins || [], selected);
+      });
+    } catch (error) {
+      activeRows.forEach((row) => {
+        const select = row.querySelector('[data-field="bin"]');
+        select.replaceChildren(new Option("BIN 加载失败", ""));
+        select.disabled = true;
+      });
+      showMessage(error.message || "BIN 查询失败，请检查接口后重试。", "error");
+    }
+  }
+
+  const rowsByBrand = new Map();
+  document.querySelectorAll("[data-row]").forEach((row) => {
+    const brandSelect = row.querySelector('[data-field="brand"]');
+    const brand = brandSelect.value.trim();
+    if (brand) {
+      rowsByBrand.set(brand, [...(rowsByBrand.get(brand) || []), row]);
+    } else {
+      setBinOptions(row, [], "");
+    }
+    brandSelect.addEventListener("change", () => {
+      const binSelect = row.querySelector('[data-field="bin"]');
+      binSelect.dataset.selectedBin = "";
+      loadBins(brandSelect.value.trim(), [row], false);
+    });
+  });
+  rowsByBrand.forEach((rows, brand) => loadBins(brand, rows));
 
   sendButton.addEventListener("click", async () => {
     const merchantNumber = merchantSelect.value.trim();

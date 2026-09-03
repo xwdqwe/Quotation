@@ -119,6 +119,10 @@ class QuoteSyncPayload(BaseModel):
     rows: list[QuoteRowPayload] = Field(default_factory=list)
 
 
+class BinOptionsPayload(BaseModel):
+    category_name: str = ""
+
+
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     settings = get_auth_settings()
@@ -296,6 +300,21 @@ async def parse_quotes(request: Request):
     )
 
 
+@app.post("/quotes/bin-options")
+def quote_bin_options(payload: BinOptionsPayload):
+    category_name = payload.category_name.strip()
+    if not category_name:
+        raise HTTPException(status_code=400, detail={"message": "请先选择 Cardsabi 品牌。"})
+    try:
+        bins = CardsabiClient().query_bins(category_name)
+    except CardsabiClientError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"message": f"Cardsabi BIN 列表查询失败：{exc}"},
+        ) from exc
+    return {"category_name": category_name, "bins": bins}
+
+
 @app.post("/quotes/send-json")
 def send_quotes_json(payload: QuoteSyncPayload):
     merchant_number = payload.merchant_number.strip()
@@ -324,6 +343,33 @@ def send_quotes_json(payload: QuoteSyncPayload):
             )
         except QuoteSyncValidationError as exc:
             raise HTTPException(status_code=400, detail=exc.errors) from exc
+
+        try:
+            live_bins = client.query_bins(prepared.category_name)
+        except CardsabiClientError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": f"Cardsabi 最新 BIN 列表查询失败，已停止发送：{exc}。"
+                    "系统不会使用旧 BIN 继续发送。"
+                },
+            ) from exc
+        selected_bins = {
+            str(item.get("bin") or "").strip()
+            for item in prepared.payload["merchantQuoteList"][0]["quoteList"]
+            if str(item.get("bin") or "").strip()
+        }
+        invalid_bins = sorted(selected_bins - set(live_bins))
+        if invalid_bins:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": (
+                        f"品牌 {prepared.category_name} 选择的 BIN（{'、'.join(invalid_bins)}）"
+                        "不在 Cardsabi 最新 BIN 列表中，请重新选择后发送。"
+                    )
+                },
+            )
 
         try:
             response = client.submit_quotes(prepared.payload)

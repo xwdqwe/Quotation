@@ -61,6 +61,14 @@ class CardsabiClient:
         response = self._post("/openapi/query-country-name-list", {})
         return [str(item) for item in response.get("content") or []]
 
+    def query_bins(self, category_name: str) -> list[str]:
+        response = self._post(
+            "/openapi/query-bin-list-by-category-name",
+            {"categoryName": category_name},
+        )
+        values = [str(item).strip() for item in response.get("content") or []]
+        return list(dict.fromkeys(item for item in values if item))
+
     def submit_quotes(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post("/openapi/merchant-quote", payload, allow_business_error=True)
 

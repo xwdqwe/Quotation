@@ -13,9 +13,9 @@ sys.path.insert(0, str(ROOT))
 from fastapi import HTTPException  # noqa: E402
 
 from app import main as main_module  # noqa: E402
-from app.cardsabi_client import CardsabiClientError  # noqa: E402
+from app.cardsabi_client import CardsabiClient, CardsabiClientError, CardsabiSettings  # noqa: E402
 from app.database import create_tables, get_connection  # noqa: E402
-from app.main import QuoteRowPayload, QuoteSyncPayload  # noqa: E402
+from app.main import BinOptionsPayload, QuoteRowPayload, QuoteSyncPayload  # noqa: E402
 from app.quote_sync import QuoteSyncValidationError, prepare_sync_payload  # noqa: E402
 from app.sync_store import (  # noqa: E402
     category_setting_dict,
@@ -195,6 +195,9 @@ def test_failed_api_call_is_persisted() -> None:
         def query_countries(self):
             return ["US"]
 
+        def query_bins(self, category_name):
+            return []
+
         def submit_quotes(self, payload):
             raise CardsabiClientError("测试连接失败")
 
@@ -270,6 +273,10 @@ def test_send_refreshes_live_catalogs_before_submit() -> None:
             self.calls.append("countries")
             return ["US"]
 
+        def query_bins(self, category_name):
+            self.calls.append(f"bins:{category_name}")
+            return ["123456"]
+
         def submit_quotes(self, payload):
             self.calls.append("submit")
             self.submitted_payload = payload
@@ -320,12 +327,177 @@ def test_send_refreshes_live_catalogs_before_submit() -> None:
             main_module.CardsabiClient = original_client
 
         assert result["ok"] is True
-        assert client.calls == ["merchants", "categories", "countries", "submit"]
+        assert client.calls == ["merchants", "categories", "countries", "bins:iTunes", "submit"]
         merchant_payload = client.submitted_payload["merchantQuoteList"][0]
         quote_payload = merchant_payload["quoteList"][0]
         assert merchant_payload["merchantName"] == "实时商家名称"
         assert quote_payload["categoryName"] == "iTunes"
         assert quote_payload["country"] == "US"
+
+
+def test_query_bins_uses_category_name() -> None:
+    class RecordingClient(CardsabiClient):
+        def __init__(self) -> None:
+            super().__init__(CardsabiSettings("https://example.test", "user", "password", 5))
+            self.request = None
+
+        def _post(self, path, payload, *, allow_business_error=False):
+            self.request = (path, payload, allow_business_error)
+            return {"code": "00000", "content": [" 123456 ", "", "654321", "123456"]}
+
+    client = RecordingClient()
+    assert client.query_bins("Amazon") == ["123456", "654321"]
+    assert client.request == (
+        "/openapi/query-bin-list-by-category-name",
+        {"categoryName": "Amazon"},
+        False,
+    )
+
+
+def test_bin_options_proxy_and_editor_use_live_select() -> None:
+    class BinClient:
+        def query_bins(self, category_name):
+            assert category_name == "VISA"
+            return ["4143", "511332"]
+
+    original_client = main_module.CardsabiClient
+    main_module.CardsabiClient = BinClient
+    try:
+        result = main_module.quote_bin_options(BinOptionsPayload(category_name=" VISA "))
+    finally:
+        main_module.CardsabiClient = original_client
+
+    assert result == {"category_name": "VISA", "bins": ["4143", "511332"]}
+    template = (ROOT / "app" / "templates" / "quotes.html").read_text(encoding="utf-8")
+    assert '<select data-field="bin"' in template
+    assert '<input data-field="bin"' not in template
+    assert "quote_bin_options" in template
+
+
+def test_send_rejects_bin_missing_from_live_brand_list() -> None:
+    class FreshBinClient:
+        def __init__(self) -> None:
+            self.submitted = False
+
+        def query_merchants(self):
+            return [{"merchantNumber": "M10001", "name": "测试商家"}]
+
+        def query_categories(self):
+            return ["iTunes"]
+
+        def query_countries(self):
+            return ["US"]
+
+        def query_bins(self, category_name):
+            assert category_name == "iTunes"
+            return ["123456"]
+
+        def submit_quotes(self, payload):
+            self.submitted = True
+            return {"code": "00000", "message": "不应发送"}
+
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "sync.sqlite3"
+        with closing(get_connection(db_path)) as conn, conn:
+            create_tables(conn)
+            init_sync_tables(conn)
+            replace_catalogs(
+                conn,
+                [{"merchantNumber": "M10001", "name": "测试商家"}],
+                ["iTunes"],
+                ["US"],
+            )
+            save_category_settings(conn, [{"category_name": "iTunes", "card_speed": "Fast"}])
+
+        client = FreshBinClient()
+        original_get_connection = main_module.get_connection
+        original_client = main_module.CardsabiClient
+        main_module.get_connection = lambda: get_connection(db_path)
+        main_module.CardsabiClient = lambda: client
+        try:
+            try:
+                main_module.send_quotes_json(
+                    QuoteSyncPayload(
+                        merchant_number="M10001",
+                        source_text="Apple US 50=5.4",
+                        rows=[QuoteRowPayload(**row(brand="iTunes", bin="999999"))],
+                    )
+                )
+            except HTTPException as exc:
+                assert exc.status_code == 400
+                assert "999999" in str(exc.detail)
+                assert "最新 BIN 列表" in str(exc.detail)
+            else:
+                raise AssertionError("已失效或跨品牌 BIN 必须阻止整批发送")
+        finally:
+            main_module.get_connection = original_get_connection
+            main_module.CardsabiClient = original_client
+
+        assert client.submitted is False
+
+
+def test_send_allows_empty_or_live_bin() -> None:
+    class FreshBinClient:
+        def __init__(self) -> None:
+            self.payloads = []
+
+        def query_merchants(self):
+            return [{"merchantNumber": "M10001", "name": "测试商家"}]
+
+        def query_categories(self):
+            return ["iTunes"]
+
+        def query_countries(self):
+            return ["US"]
+
+        def query_bins(self, category_name):
+            return ["123456"]
+
+        def submit_quotes(self, payload):
+            self.payloads.append(payload)
+            return {"code": "00000", "message": "成功"}
+
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "sync.sqlite3"
+        with closing(get_connection(db_path)) as conn, conn:
+            create_tables(conn)
+            init_sync_tables(conn)
+            replace_catalogs(
+                conn,
+                [{"merchantNumber": "M10001", "name": "测试商家"}],
+                ["iTunes"],
+                ["US"],
+            )
+            save_category_settings(conn, [{"category_name": "iTunes", "card_speed": "Fast"}])
+
+        client = FreshBinClient()
+        original_get_connection = main_module.get_connection
+        original_client = main_module.CardsabiClient
+        main_module.get_connection = lambda: get_connection(db_path)
+        main_module.CardsabiClient = lambda: client
+        try:
+            empty_result = main_module.send_quotes_json(
+                QuoteSyncPayload(
+                    merchant_number="M10001",
+                    rows=[QuoteRowPayload(**row(brand="iTunes", bin=""))],
+                )
+            )
+            live_result = main_module.send_quotes_json(
+                QuoteSyncPayload(
+                    merchant_number="M10001",
+                    rows=[QuoteRowPayload(**row(brand="iTunes", bin="123456"))],
+                )
+            )
+        finally:
+            main_module.get_connection = original_get_connection
+            main_module.CardsabiClient = original_client
+
+        assert empty_result["ok"] is True
+        assert live_result["ok"] is True
+        first_quote = client.payloads[0]["merchantQuoteList"][0]["quoteList"][0]
+        second_quote = client.payloads[1]["merchantQuoteList"][0]["quoteList"][0]
+        assert "bin" not in first_quote
+        assert second_quote["bin"] == "123456"
 
 
 def test_send_stops_when_live_catalog_refresh_fails() -> None:
@@ -446,6 +618,10 @@ def main() -> None:
     test_history_retention()
     test_failed_api_call_is_persisted()
     test_send_refreshes_live_catalogs_before_submit()
+    test_query_bins_uses_category_name()
+    test_bin_options_proxy_and_editor_use_live_select()
+    test_send_rejects_bin_missing_from_live_brand_list()
+    test_send_allows_empty_or_live_bin()
     test_send_stops_when_live_catalog_refresh_fails()
     test_quote_brand_options_use_live_cardsabi_categories()
     print("Cardsabi 同步回归通过：单品牌、卡类型、范围、合并、精度、备注和7天记录")
